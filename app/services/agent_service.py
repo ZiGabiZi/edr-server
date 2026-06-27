@@ -28,6 +28,19 @@ def find_agent_by_machine_id_hash(machine_id_hash: Optional[str]) -> Optional[Di
 
     return None
 
+def record_heartbeat(agent_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Actualizează last_seen pentru agentul dat.
+    Returnează None dacă agentul nu există (agent neînregistrat).
+    """
+    agent = agents_store.get(agent_id)
+    if agent is None:
+        return None
+
+    agent["last_seen"] = _utc_now()
+    agent["status"] = "active"
+    return agent
+
 
 def register_agent(agent_request: AgentRegisterRequest) -> Dict[str, Any]:
     agent_data = _model_to_dict(agent_request)

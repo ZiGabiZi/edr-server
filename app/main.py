@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 
-from app.routes import agents, events
+from app.routes import agents, events, heartbeat
 
 app = FastAPI(
     title="EDR Server",
@@ -20,3 +20,4 @@ def health_check() -> dict:
 
 app.include_router(agents.router)
 app.include_router(events.router)
+app.include_router(heartbeat.router)
