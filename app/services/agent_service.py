@@ -5,6 +5,8 @@ from app.schemas.agent import AgentRegisterRequest
 
 
 agents_store: Dict[str, Dict[str, Any]] = {}
+STALE_AFTER_S = 30
+OFFLINE_AFTER_S = 90
 
 
 def _utc_now() -> str:
@@ -38,7 +40,6 @@ def record_heartbeat(agent_id: str) -> Optional[Dict[str, Any]]:
         return None
 
     agent["last_seen"] = _utc_now()
-    agent["status"] = "active"
     return agent
 
 
@@ -90,9 +91,28 @@ def register_agent(agent_request: AgentRegisterRequest) -> Dict[str, Any]:
 
     return agent_data
 
+def _derive_status(agent: Dict[str, Any]) -> str:
+    last_seen_raw = agent.get("last_seen")
+    if not last_seen_raw:
+        return "unknown"
+
+    last_seen = datetime.fromisoformat(last_seen_raw)
+    age_seconds = (datetime.now(timezone.utc) - last_seen).total_seconds()
+
+    if age_seconds < STALE_AFTER_S:
+        return "online"
+    if age_seconds < OFFLINE_AFTER_S:
+        return "degraded"
+    return "offline"
+
 
 def get_agents() -> List[Dict[str, Any]]:
-    return list(agents_store.values())
+    result = []
+    for agent in agents_store.values():
+        agent_view = agent.copy()
+        agent_view["status"] = _derive_status(agent_view)
+        result.append(agent_view)
+    return result
 
 
 def agent_exists(agent_id: str) -> bool:
