@@ -89,8 +89,16 @@ def _derive_status(agent: Dict[str, Any]) -> str:
     if not last_seen_raw:
         return "unknown"
 
-    last_seen = datetime.fromisoformat(last_seen_raw)
-    age_seconds = (datetime.now(timezone.utc) - last_seen).total_seconds()
+    try:
+        last_seen = datetime.fromisoformat(last_seen_raw)
+        
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+            
+        age_seconds = (datetime.now(timezone.utc) - last_seen).total_seconds()
+        
+    except (ValueError, TypeError):
+        return "unknown"
 
     if age_seconds < STALE_AFTER_S:
         return "online"

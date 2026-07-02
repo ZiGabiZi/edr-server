@@ -27,4 +27,4 @@ def create_event(event: EventCreateRequest) -> dict:
 
 def get_all_events() -> List[dict]:
     with events_lock:
-        return list(events_store)
+        return list(events_store).copy()

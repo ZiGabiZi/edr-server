@@ -10,7 +10,7 @@ class AgentRegisterRequest(BaseModel):
     architecture: str
     os_architecture: str
     machine_id_type: str
-    machine_id_hash: str
+    machine_id_hash: Optional[str] = None
     ip_address: Optional[str] = None
 
 
