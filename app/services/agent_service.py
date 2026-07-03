@@ -11,11 +11,8 @@ agents_lock = Lock()
 STALE_AFTER_S = 30
 OFFLINE_AFTER_S = 90
 
-# Cadența de heartbeat pe care serverul o dictează agenților. Centralizată aici
-# (nu în agent) astfel încât operatorul poate schimba ritmul întregului parc de
-# agenți dintr-un singur loc, fără a redistribui configurație pe fiecare endpoint.
 HEARTBEAT_INTERVAL_SECONDS = 10
-
+STRONG_MACHINE_ID_TYPES = {"windows_machine_guid", "linux_machine_id"}
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -121,10 +118,14 @@ def register_agent(agent_request: AgentRegisterRequest) -> Dict[str, Any]:
             return existing_agent_by_id.copy()
 
         existing_agent_by_machine_id = None
-        for agent in agents_store.values():
-            if agent.get("machine_id_hash") == agent_data.get("machine_id_hash"):
-                existing_agent_by_machine_id = agent
-                break
+        machine_id_hash = agent_data.get("machine_id_hash")
+        machine_id_type = agent_data.get("machine_id_type")
+
+        if machine_id_hash is not None and machine_id_type in STRONG_MACHINE_ID_TYPES:
+            for agent in agents_store.values():
+                if agent.get("machine_id_hash") == agent_data.get("machine_id_hash"):
+                    existing_agent_by_machine_id = agent
+                    break
 
         if existing_agent_by_machine_id:
             old_agent_id = existing_agent_by_machine_id["agent_id"]
