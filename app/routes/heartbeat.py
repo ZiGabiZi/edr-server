@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.schemas.heartbeat import HeartbeatRequest, HeartbeatDirective, HeartbeatResponse
-from app.services.agent_service import record_heartbeat
+from app.services.agent_service import record_heartbeat, HEARTBEAT_INTERVAL_SECONDS
 
 router = APIRouter(prefix="/api/agents", tags=["Heartbeat"])
 
@@ -18,10 +18,12 @@ def receive_heartbeat(agent_id: str, body: HeartbeatRequest) -> HeartbeatRespons
             status="unregistered",
             agent_id=agent_id,
             directive=HeartbeatDirective(action="reregister"),
+            next_heartbeat_seconds=HEARTBEAT_INTERVAL_SECONDS,
         )
 
     return HeartbeatResponse(
         status="ok",
         agent_id=agent_id,
         directive=HeartbeatDirective(action="none"),
+        next_heartbeat_seconds=HEARTBEAT_INTERVAL_SECONDS,
     )

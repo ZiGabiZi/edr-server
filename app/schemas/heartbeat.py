@@ -21,3 +21,4 @@ class HeartbeatResponse(BaseModel):
     status: str                         # "ok" | "unregistered"
     agent_id: str
     directive: HeartbeatDirective
+    next_heartbeat_seconds: int         # cadența dictată de server pentru următorul heartbeat

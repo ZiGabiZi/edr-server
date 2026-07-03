@@ -10,6 +10,11 @@ agents_lock = Lock()
 STALE_AFTER_S = 30
 OFFLINE_AFTER_S = 90
 
+# Cadența de heartbeat pe care serverul o dictează agenților. Centralizată aici
+# (nu în agent) astfel încât operatorul poate schimba ritmul întregului parc de
+# agenți dintr-un singur loc, fără a redistribui configurație pe fiecare endpoint.
+HEARTBEAT_INTERVAL_SECONDS = 10
+
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()

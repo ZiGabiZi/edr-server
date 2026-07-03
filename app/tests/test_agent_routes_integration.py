@@ -78,6 +78,18 @@ def test_heartbeat_for_unknown_agent_requests_reregister():
     assert body["directive"]["action"] == "reregister"
 
 
+def test_heartbeat_response_includes_server_dictated_cadence():
+    _register()
+
+    response = client.post(
+        "/api/agents/agent-1/heartbeat", json={"agent_id": "agent-1"}
+    )
+    body = response.json()
+
+    assert body["next_heartbeat_seconds"] == svc.HEARTBEAT_INTERVAL_SECONDS
+    assert body["next_heartbeat_seconds"] > 0
+
+
 def test_heartbeat_agent_id_mismatch_is_rejected():
     _register()
 
