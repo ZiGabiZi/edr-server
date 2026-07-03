@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from threading import Lock  # <-- IMPORT NOU
@@ -26,17 +27,77 @@ def _model_to_dict(model: AgentRegisterRequest) -> Dict[str, Any]:
     return model.dict()
 
 
-def record_heartbeat(agent_id: str) -> Optional[Dict[str, Any]]:
+@dataclass
+class HeartbeatResult:
     """
-    Actualizează last_seen pentru agentul dat în mod atomic.
+    Rezultatul procesării unui heartbeat.
+
+    Pe lângă snapshot-ul agentului (sau None dacă agentul nu e înregistrat),
+    poartă verdictul de continuitate derivat din contorul de secvență:
+        - restart_detected: contorul agentului a scăzut/resetat => proces repornit.
+        - missed_heartbeats: câte heartbeat-uri au lipsit în golul de secvență curent.
     """
-    with agents_lock: 
+    agent: Optional[Dict[str, Any]]
+    restart_detected: bool = False
+    missed_heartbeats: int = 0
+    sequence: Optional[int] = None
+
+
+def record_heartbeat(
+    agent_id: str,
+    sequence: Optional[int] = None,
+) -> HeartbeatResult:
+    """
+    Actualizează last_seen pentru agentul dat în mod atomic și, dacă heartbeat-ul
+    poartă un contor de secvență, evaluează continuitatea față de ultima secvență
+    cunoscută pentru acel agent.
+
+    Semantica secvenței (contor monoton per proces al agentului, resetat la fiecare
+    pornire a procesului):
+        - sequence None            -> agent legacy, fără detecție (doar last_seen).
+        - prima secvență observată -> stabilim baseline, fără verdict (n-avem cu ce compara).
+        - sequence <= last_sequence -> contorul a regresat/resetat => RESTART de agent.
+        - sequence  > last+1        -> gol în secvență => (sequence - last - 1) heartbeat-uri pierdute.
+        - sequence == last+1        -> continuitate normală.
+
+    Contoarele cumulative restart_count / missed_heartbeats_total sunt persistate pe
+    înregistrarea agentului pentru observabilitate.
+    """
+    with agents_lock:
         agent = agents_store.get(agent_id)
         if agent is None:
-            return None
+            return HeartbeatResult(agent=None)
 
         agent["last_seen"] = _utc_now()
-        return agent.copy()
+
+        restart_detected = False
+        missed = 0
+
+        if sequence is not None:
+            last_sequence = agent.get("last_sequence")
+
+            if last_sequence is None:
+                # Prima secvență observată pentru acest agent: doar baseline.
+                pass
+            elif sequence <= last_sequence:
+                # Contorul agentului a scăzut/resetat -> procesul a repornit.
+                restart_detected = True
+                agent["restart_count"] = agent.get("restart_count", 0) + 1
+            elif sequence > last_sequence + 1:
+                # Gol în secvență -> heartbeat-uri pierdute între două primiri.
+                missed = sequence - last_sequence - 1
+                agent["missed_heartbeats_total"] = (
+                    agent.get("missed_heartbeats_total", 0) + missed
+                )
+
+            agent["last_sequence"] = sequence
+
+        return HeartbeatResult(
+            agent=agent.copy(),
+            restart_detected=restart_detected,
+            missed_heartbeats=missed,
+            sequence=sequence,
+        )
 
 
 def register_agent(agent_request: AgentRegisterRequest) -> Dict[str, Any]:
