@@ -37,6 +37,7 @@ class HeartbeatResult:
     restart_detected: bool = False
     missed_heartbeats: int = 0
     sequence: Optional[int] = None
+    instance_id: Optional[str] = None
 
 
 class AgentIdConflictError(Exception):
@@ -48,6 +49,7 @@ class AgentIdConflictError(Exception):
 def record_heartbeat(
     agent_id: str,
     sequence: Optional[int] = None,
+    instance_id: Optional[str] = None,
 ) -> HeartbeatResult:
     """
     Actualizează last_seen pentru agentul dat în mod atomic și, dacă heartbeat-ul

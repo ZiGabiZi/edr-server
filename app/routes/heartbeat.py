@@ -11,7 +11,7 @@ def receive_heartbeat(agent_id: str, body: HeartbeatRequest) -> HeartbeatRespons
     if agent_id != body.agent_id:
         raise HTTPException(status_code=400, detail="agent_id mismatch")
 
-    result = record_heartbeat(agent_id, body.sequence)
+    result = record_heartbeat(agent_id, body.sequence, body.agent_instance_id)
 
     if result.agent is None:
         # Agentul a pierdut înregistrarea (ex: server restartat, store șters).
@@ -33,8 +33,8 @@ def receive_heartbeat(agent_id: str, body: HeartbeatRequest) -> HeartbeatRespons
                 agent_id=agent_id,
                 event_type="agent_restart",
                 description=(
-                    f"Agent restart detected server-side: heartbeat sequence "
-                    f"reset to {result.sequence}."
+                    f"Agent restart detected server-side: new instance "
+                    f"{result.instance_id} began at sequence {result.sequence}."
                 ),
             )
         )

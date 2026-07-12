@@ -11,6 +11,7 @@ class HeartbeatRequest(BaseModel):
     sequence: Optional[int] = None
     # Viitor: agent poate raporta starea sa locală
     # yara_ruleset_version: Optional[str] = None
+    agent_instance_id: Optional[str] = None  # viitor: pentru a diferenția mai multe instanțe ale aceluiași agent_id
 
 class HeartbeatDirective(BaseModel):
     """

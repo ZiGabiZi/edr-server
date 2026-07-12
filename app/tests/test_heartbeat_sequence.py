@@ -31,10 +31,12 @@ def _register(agent_id: str = "agent-1"):
     )
 
 
-def _heartbeat(agent_id: str, sequence=None):
+def _heartbeat(agent_id: str, sequence=None, instance_id="inst-A"):
     payload = {"agent_id": agent_id}
     if sequence is not None:
         payload["sequence"] = sequence
+    if instance_id is not None:
+        payload["agent_instance_id"] = instance_id
     return client.post(f"/api/agents/{agent_id}/heartbeat", json=payload)
 
 
@@ -96,15 +98,13 @@ def test_sequence_reset_is_detected_as_restart_and_emits_event():
     assert agent_svc.agents_store["agent-1"]["restart_count"] == 1
 
 
-def test_equal_sequence_is_treated_as_restart():
-    # nu strict crescător (replay/reset la aceeași valoare) -> tratat ca restart
+def test_equal_sequence_same_instance_is_duplicate_not_restart():
     _register()
     _heartbeat("agent-1", sequence=7)
-
-    body = _heartbeat("agent-1", sequence=7).json()
-
-    assert body["restart_detected"] is True
-    assert len(_restart_events()) == 1
+    body = _heartbeat("agent-1", sequence=7).json()   # retransmisie exactă
+    assert body["restart_detected"] is False
+    assert _restart_events() == []
+    assert agent_svc.agents_store["agent-1"].get("restart_count", 0) == 0
 
 
 def test_baseline_resets_after_restart_so_next_beat_is_normal():
@@ -121,11 +121,53 @@ def test_baseline_resets_after_restart_so_next_beat_is_normal():
 
 def test_legacy_heartbeat_without_sequence_is_backward_compatible():
     _register()
-
-    body = _heartbeat("agent-1").json()  # fără sequence
-
+    body = _heartbeat("agent-1", instance_id=None).json()   # nici sequence, nici instance
     assert body["status"] == "ok"
     assert body["restart_detected"] is False
     assert body["missed_heartbeats"] == 0
     assert "last_sequence" not in agent_svc.agents_store["agent-1"]
     assert _restart_events() == []
+
+
+
+def test_lower_sequence_same_instance_is_stale_duplicate():
+    _register()
+    _heartbeat("agent-1", sequence=5)
+    body = _heartbeat("agent-1", sequence=4).json()   # pachet întârziat
+    assert body["restart_detected"] is False
+    assert _restart_events() == []
+    assert agent_svc.agents_store["agent-1"]["last_sequence"] == 5
+
+
+# --- REPORNIRE (prin schimbarea incarnării) ----------------------------------
+def test_new_instance_is_detected_as_restart_and_emits_event():
+    _register()
+    _heartbeat("agent-1", sequence=1, instance_id="inst-A")
+    _heartbeat("agent-1", sequence=2, instance_id="inst-A")
+    _heartbeat("agent-1", sequence=3, instance_id="inst-A")
+
+    body = _heartbeat("agent-1", sequence=1, instance_id="inst-B").json()  # proces nou
+
+    assert body["restart_detected"] is True
+    events = _restart_events()
+    assert len(events) == 1
+    assert events[0]["agent_id"] == "agent-1"
+    assert agent_svc.agents_store["agent-1"]["restart_count"] == 1
+
+
+def test_restart_detected_even_when_sequence_is_higher():
+    _register()
+    _heartbeat("agent-1", sequence=5, instance_id="inst-A")
+    body = _heartbeat("agent-1", sequence=100, instance_id="inst-B").json()
+    assert body["restart_detected"] is True
+    assert body["missed_heartbeats"] == 0
+    assert len(_restart_events()) == 1
+
+
+def test_baseline_resets_after_restart_so_next_beat_is_normal():
+    _register()
+    _heartbeat("agent-1", sequence=5, instance_id="inst-A")
+    _heartbeat("agent-1", sequence=1, instance_id="inst-B")   # restart -> baseline 1
+    body = _heartbeat("agent-1", sequence=2, instance_id="inst-B").json()
+    assert body["restart_detected"] is False
+    assert len(_restart_events()) == 1
