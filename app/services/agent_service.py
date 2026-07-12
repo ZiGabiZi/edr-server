@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from threading import Lock  # <-- IMPORT NOU
+from threading import Lock
 
 from app.schemas.agent import AgentRegisterRequest
 
@@ -38,6 +38,12 @@ class HeartbeatResult:
     missed_heartbeats: int = 0
     sequence: Optional[int] = None
 
+
+class AgentIdConflictError(Exception):
+    """Același agent_id revendicat de o mașină cu machine_id diferit."""
+    def __init__(self, agent_id: str):
+        self.agent_id = agent_id
+        super().__init__(f"agent_id '{agent_id}' is already registered to a different machine")
 
 def record_heartbeat(
     agent_id: str,
@@ -107,6 +113,22 @@ def register_agent(agent_request: AgentRegisterRequest) -> Dict[str, Any]:
         existing_agent_by_id = agents_store.get(agent_id)
 
         if existing_agent_by_id:
+            existing_hash = existing_agent_by_id.get("machine_id_hash")
+            existing_type = existing_agent_by_id.get("machine_id_type")
+            new_hash = agent_data.get("machine_id_hash")
+            new_type = agent_data.get("machine_id_type")
+
+            # Conflict doar dacă AMBELE părți au o identitate de mașină non-goală
+            # și aceasta diferă (hash sau tip). Înregistrările legacy fără hash
+            # rămân actualizabile, ca până acum.
+            if (
+                existing_hash and existing_hash.strip()
+                and new_hash and new_hash.strip()
+                and (existing_hash, existing_type) != (new_hash, new_type)
+            ):
+                raise AgentIdConflictError(agent_id)
+
+
             created_at = existing_agent_by_id.get("created_at", now)
 
             existing_agent_by_id.update(agent_data)
