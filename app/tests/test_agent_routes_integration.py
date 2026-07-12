@@ -12,7 +12,13 @@ def setup_function():
     svc.agents_store.clear()
 
 
-def _register(agent_id: str = "agent-1"):
+def _register(
+    agent_id: str = "agent-1",
+    machine_id_type: str = "hash",
+    machine_id_hash=...,
+):
+    if machine_id_hash is ...:
+        machine_id_hash = f"hash-{agent_id}"
     return client.post(
         "/api/agents/register",
         json={
@@ -21,8 +27,8 @@ def _register(agent_id: str = "agent-1"):
             "operating_system": "windows",
             "architecture": "x64",
             "os_architecture": "x64",
-            "machine_id_type": "hash",
-            "machine_id_hash": f"hash-{agent_id}",
+            "machine_id_type": machine_id_type,
+            "machine_id_hash": machine_id_hash,
         },
     )
 
@@ -107,3 +113,42 @@ def test_internal_store_status_is_not_overwritten_by_derived_view():
 
     # get_agents() trebuie sa lucreze pe .copy(), nu pe referinta din store
     assert svc.agents_store["agent-1"]["status"] == "registered"
+
+
+def test_reregister_with_same_machine_id_merges_onto_existing_record():
+    _register("agent-1", "windows_machine_guid", "guid-hash")
+
+    body = _register("agent-2", "windows_machine_guid", "guid-hash").json()
+
+    assert body["agent"]["registration_status"] == "updated_by_machine_id"
+    assert "agent-1" not in svc.agents_store
+    assert list(svc.agents_store) == ["agent-2"]
+
+
+def test_fallback_machine_id_type_still_participates_in_dedup():
+    # regresie: allowlist-ul de tipuri "strong" excludea mac_address_fallback,
+    # creand un agent duplicat la fiecare reinstalare pe astfel de masini
+    _register("agent-1", "mac_address_fallback", "mac-hash")
+
+    body = _register("agent-2", "mac_address_fallback", "mac-hash").json()
+
+    assert body["agent"]["registration_status"] == "updated_by_machine_id"
+    assert list(svc.agents_store) == ["agent-2"]
+
+
+def test_same_hash_different_machine_id_type_is_not_merged():
+    _register("agent-1", "windows_machine_guid", "shared-hash")
+
+    body = _register("agent-2", "mac_address_fallback", "shared-hash").json()
+
+    assert body["agent"]["registration_status"] == "created"
+    assert set(svc.agents_store) == {"agent-1", "agent-2"}
+
+
+def test_agents_without_machine_id_hash_do_not_collide():
+    _register("agent-1", "unknown", None)
+
+    body = _register("agent-2", "unknown", None).json()
+
+    assert body["agent"]["registration_status"] == "created"
+    assert set(svc.agents_store) == {"agent-1", "agent-2"}

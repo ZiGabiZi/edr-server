@@ -12,7 +12,6 @@ STALE_AFTER_S = 30
 OFFLINE_AFTER_S = 90
 
 HEARTBEAT_INTERVAL_SECONDS = 10
-STRONG_MACHINE_ID_TYPES = {"windows_machine_guid", "linux_machine_id"}
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -121,9 +120,12 @@ def register_agent(agent_request: AgentRegisterRequest) -> Dict[str, Any]:
         machine_id_hash = agent_data.get("machine_id_hash")
         machine_id_type = agent_data.get("machine_id_type")
 
-        if machine_id_hash is not None and machine_id_type in STRONG_MACHINE_ID_TYPES:
+        if machine_id_hash and machine_id_hash.strip():
             for agent in agents_store.values():
-                if agent.get("machine_id_hash") == agent_data.get("machine_id_hash"):
+                if (
+                    agent.get("machine_id_hash") == machine_id_hash
+                    and agent.get("machine_id_type") == machine_id_type
+                ):
                     existing_agent_by_machine_id = agent
                     break
 
