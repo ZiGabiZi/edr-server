@@ -74,33 +74,59 @@ def record_heartbeat(
 
         agent["last_seen"] = _utc_now()
 
-        restart_detected = False
+        # 1) REPORNIRE — autoritar, prin schimbarea incarnării.
+        if instance_id is not None:
+            last_instance = agent.get("agent_instance_id")
+
+            if last_instance is None:
+                # Prima incarnare cunoscută pentru acest agent -> doar baseline.
+                agent["agent_instance_id"] = instance_id
+            elif instance_id != last_instance:
+                # Proces repornit (crash, kill, tampering). Adoptăm noua incarnare
+                # și resetăm baseline-ul de secvență la ea.
+                agent["restart_count"] = agent.get("restart_count", 0) + 1
+                agent["agent_instance_id"] = instance_id
+                agent["last_sequence"] = sequence
+                return HeartbeatResult(
+                    agent=agent.copy(),
+                    restart_detected=True,
+                    missed_heartbeats=0,
+                    sequence=sequence,
+                    instance_id=instance_id,
+                )
         missed = 0
 
         if sequence is not None:
             last_sequence = agent.get("last_sequence")
 
             if last_sequence is None:
-                # Prima secvență observată pentru acest agent: doar baseline.
-                pass
-            elif sequence <= last_sequence:
-                # Contorul agentului a scăzut/resetat -> procesul a repornit.
-                restart_detected = True
-                agent["restart_count"] = agent.get("restart_count", 0) + 1
-            elif sequence > last_sequence + 1:
-                # Gol în secvență -> heartbeat-uri pierdute între două primiri.
-                missed = sequence - last_sequence - 1
-                agent["missed_heartbeats_total"] = (
-                    agent.get("missed_heartbeats_total", 0) + missed
+                agent["last_sequence"] = sequence                    # baseline
+            elif sequence == last_sequence:
+                # Duplicat exact (retransmisie) -> idempotent, nu modificăm nimic.
+                return HeartbeatResult(
+                    agent=agent.copy(), restart_detected=False,
+                    missed_heartbeats=0, sequence=sequence, instance_id=instance_id,
                 )
-
-            agent["last_sequence"] = sequence
+            elif sequence < last_sequence:
+                # Duplicat vechi / reordonat -> ignorat pentru continuitate.
+                return HeartbeatResult(
+                    agent=agent.copy(), restart_detected=False,
+                    missed_heartbeats=0, sequence=sequence, instance_id=instance_id,
+                )
+            else:
+                if sequence > last_sequence + 1:
+                    missed = sequence - last_sequence - 1
+                    agent["missed_heartbeats_total"] = (
+                        agent.get("missed_heartbeats_total", 0) + missed
+                    )
+                agent["last_sequence"] = sequence
 
         return HeartbeatResult(
             agent=agent.copy(),
-            restart_detected=restart_detected,
+            restart_detected=False,
             missed_heartbeats=missed,
             sequence=sequence,
+            instance_id=instance_id,
         )
 
 
