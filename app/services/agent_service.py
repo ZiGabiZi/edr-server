@@ -29,8 +29,9 @@ class HeartbeatResult:
     Rezultatul procesării unui heartbeat.
 
     Pe lângă snapshot-ul agentului (sau None dacă agentul nu e înregistrat),
-    poartă verdictul de continuitate derivat din contorul de secvență:
-        - restart_detected: contorul agentului a scăzut/resetat => proces repornit.
+    poartă verdictul de continuitate al heartbeat-ului:
+        - restart_detected: incarnarea agentului (agent_instance_id) s-a schimbat
+          => procesul a repornit.
         - missed_heartbeats: câte heartbeat-uri au lipsit în golul de secvență curent.
     """
     agent: Optional[Dict[str, Any]]
@@ -52,15 +53,23 @@ def record_heartbeat(
     instance_id: Optional[str] = None,
 ) -> HeartbeatResult:
     """
-    Actualizează last_seen pentru agentul dat în mod atomic și, dacă heartbeat-ul
-    poartă un contor de secvență, evaluează continuitatea față de ultima secvență
-    cunoscută pentru acel agent.
+    Actualizează last_seen pentru agentul dat în mod atomic și evaluează continuitatea
+    heartbeat-ului pe două axe independente: incarnarea procesului (repornire) și
+    contorul de secvență (heartbeat-uri pierdute).
 
-    Semantica secvenței (contor monoton per proces al agentului, resetat la fiecare
-    pornire a procesului):
-        - sequence None            -> agent legacy, fără detecție (doar last_seen).
-        - prima secvență observată -> stabilim baseline, fără verdict (n-avem cu ce compara).
-        - sequence <= last_sequence -> contorul a regresat/resetat => RESTART de agent.
+    Repornirea e detectată autoritar prin agent_instance_id (identificator generat la
+    pornirea procesului agentului), nu prin regresia secvenței:
+        - instance_id None          -> agent legacy, fără detecție de repornire.
+        - prima incarnare observată -> stabilim baseline, fără verdict.
+        - instance_id != last       -> proces nou => RESTART, indiferent de secvență.
+          Baseline-ul de secvență se resetează la secvența noii incarnări.
+
+    Semantica secvenței (contor monoton per proces al agentului, evaluat doar în
+    interiorul aceleiași incarnări):
+        - sequence None             -> fără detecție de pierderi (doar last_seen).
+        - prima secvență observată  -> stabilim baseline (n-avem cu ce compara).
+        - sequence == last_sequence -> retransmisie exactă => ignorat, idempotent.
+        - sequence  < last_sequence -> pachet întârziat/reordonat => ignorat.
         - sequence  > last+1        -> gol în secvență => (sequence - last - 1) heartbeat-uri pierdute.
         - sequence == last+1        -> continuitate normală.
 

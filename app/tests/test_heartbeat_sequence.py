@@ -1,6 +1,7 @@
 """
-Teste pentru detecția server-side de heartbeat-uri pierdute și reporniri de agent,
-derivată din contorul de secvență trimis de agent în fiecare heartbeat.
+Teste pentru detecția server-side de heartbeat-uri pierdute și reporniri de agent:
+pierderile sunt derivate din contorul de secvență, iar repornirile din agent_instance_id
+(incarnarea procesului), ambele trimise de agent în fiecare heartbeat.
 """
 from fastapi.testclient import TestClient
 
@@ -81,23 +82,6 @@ def test_sequence_gap_counts_missed_heartbeats():
     assert _restart_events() == []
 
 
-def test_sequence_reset_is_detected_as_restart_and_emits_event():
-    _register()
-    _heartbeat("agent-1", sequence=1)
-    _heartbeat("agent-1", sequence=2)
-    _heartbeat("agent-1", sequence=3)
-
-    # procesul agentului repornește -> contorul revine la 1
-    body = _heartbeat("agent-1", sequence=1).json()
-
-    assert body["restart_detected"] is True
-
-    restart_events = _restart_events()
-    assert len(restart_events) == 1
-    assert restart_events[0]["agent_id"] == "agent-1"
-    assert agent_svc.agents_store["agent-1"]["restart_count"] == 1
-
-
 def test_equal_sequence_same_instance_is_duplicate_not_restart():
     _register()
     _heartbeat("agent-1", sequence=7)
@@ -105,18 +89,6 @@ def test_equal_sequence_same_instance_is_duplicate_not_restart():
     assert body["restart_detected"] is False
     assert _restart_events() == []
     assert agent_svc.agents_store["agent-1"].get("restart_count", 0) == 0
-
-
-def test_baseline_resets_after_restart_so_next_beat_is_normal():
-    _register()
-    _heartbeat("agent-1", sequence=5)
-    _heartbeat("agent-1", sequence=1)  # restart -> baseline devine 1
-
-    body = _heartbeat("agent-1", sequence=2).json()
-
-    assert body["restart_detected"] is False
-    # un singur eveniment de restart, nu se re-emite pentru heartbeat-ul normal următor
-    assert len(_restart_events()) == 1
 
 
 def test_legacy_heartbeat_without_sequence_is_backward_compatible():
