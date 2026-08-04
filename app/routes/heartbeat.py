@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from app.schemas.heartbeat import HeartbeatRequest, HeartbeatDirective, HeartbeatResponse
 from app.schemas.event import EventCreateRequest
 from app.services.agent_service import record_heartbeat, HEARTBEAT_INTERVAL_SECONDS
-from app.services.event_service import create_event
+from app.services.event_service import create_event, utc_now
 
 router = APIRouter(prefix="/api/agents", tags=["Heartbeat"])
 
@@ -24,14 +24,16 @@ def receive_heartbeat(agent_id: str, body: HeartbeatRequest) -> HeartbeatRespons
         )
 
     if result.restart_detected:
-        # Restart detectat pur server-side, din regresia contorului de secvență —
-        # independent de ce raportează agentul. Acesta e evenimentul agent_restart
-        # legitim: prinde reporniri (crash, kill, tampering) chiar și când agentul
-        # nu apucă să trimită un shutdown controlat.
+        # Repornire detectată prin schimbarea incarnării raportate de agent
+        # (agent_instance_id), nu prin regresia secvenței. Prinde inclusiv
+        # terminările necurate — crash, kill, tampering — când agentul nu apucă
+        # să trimită agent_shutdown.
         create_event(
             EventCreateRequest(
                 agent_id=agent_id,
                 event_type="agent_restart",
+                agent_instance_id=result.instance_id,
+                occurred_at=utc_now(),
                 description=(
                     f"Agent restart detected server-side: new instance "
                     f"{result.instance_id} began at sequence {result.sequence}."

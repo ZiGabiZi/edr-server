@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from itertools import count
 from threading import Lock
 from typing import List, Dict, Optional
@@ -9,6 +10,10 @@ _event_id_counter = count(1)
 _events_by_client_id: Dict[str, dict] = {}
 
 
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def find_event_by_client_id(client_event_id: str) -> Optional[dict]:
     with events_lock:
         return _events_by_client_id.get(client_event_id)
@@ -16,11 +21,14 @@ def find_event_by_client_id(client_event_id: str) -> Optional[dict]:
 def create_event(event: EventCreateRequest) -> dict:
     new_event = {
         "agent_id": event.agent_id,
+        "agent_instance_id": event.agent_instance_id,
         "event_type": event.event_type,
         "client_event_id": event.client_event_id,
         "file_path": event.file_path,
         "sha256": event.sha256,
         "description": event.description,
+        "occurred_at": event.occurred_at,
+        "received_at": utc_now(),
         "status": "received",
     }
 
