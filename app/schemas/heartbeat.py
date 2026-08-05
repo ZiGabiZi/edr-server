@@ -5,14 +5,18 @@ class HeartbeatRequest(BaseModel):
     agent_id: str
     agent_version: Optional[str] = None
     # Contor monoton per proces al agentului: pornește de la 1 la fiecare lansare
-    # și crește cu fiecare heartbeat. Permite serverului să detecteze heartbeat-uri
-    # pierdute (goluri în secvență) și reporniri de agent (resetarea contorului).
+    # și crește cu fiecare heartbeat. Serverul îl folosește pentru heartbeat-uri
+    # pierdute (goluri în secvență). NU mai deduce reporniri din resetarea lui —
+    # comitul e993733 a mutat detecția pe agent_instance_id, pentru că o secvență
+    # mai mică poate fi și un pachet reordonat.
     # Opțional pentru compatibilitate cu agenți vechi care nu îl trimit încă.
     sequence: Optional[int] = None
     # Viitor: agent poate raporta starea sa locală
     # yara_ruleset_version: Optional[str] = None
-    agent_instance_id: Optional[str] = None  # viitor: pentru a diferenția mai multe instanțe ale aceluiași agent_id
-
+    # Incarnarea procesului agentului, generată la fiecare pornire. Sursa autoritară
+    # pentru detecția de repornire. Opțional doar pentru compatibilitate cu build-uri
+    # vechi: în absența ei, continuitatea nu poate fi garantată (vezi record_heartbeat).
+    agent_instance_id: Optional[str] = None
 class HeartbeatDirective(BaseModel):
     """
     Directive pe care serverul le trimite agentului la fiecare heartbeat.
@@ -30,3 +34,4 @@ class HeartbeatResponse(BaseModel):
     next_heartbeat_seconds: int         # cadența dictată de server pentru următorul heartbeat
     restart_detected: bool = False      # serverul a observat o resetare a secvenței (restart de agent)
     missed_heartbeats: int = 0          # câte heartbeat-uri au lipsit în golul de secvență curent
+    continuity_lost: bool = False       # serverul nu poate garanta continuitatea (agent fara incarnare)

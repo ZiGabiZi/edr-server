@@ -143,3 +143,106 @@ def test_baseline_resets_after_restart_so_next_beat_is_normal():
     body = _heartbeat("agent-1", sequence=2, instance_id="inst-B").json()
     assert body["restart_detected"] is False
     assert len(_restart_events()) == 1
+
+
+# --- CONTINUITATE ÎN ABSENȚA INCARNĂRII --------------------------------------
+#
+# Zona pe care suita nu o acoperea. Testul legacy existent trimite nici sequence,
+# nici instance_id — combinație inofensivă, pentru că ramura periculoasă nici nu
+# se atinge. Combinația care doare e sequence prezent + incarnare absentă: exact
+# ce trimitea build-ul de agent dinaintea introducerii lui agent_instance_id.
+
+def _continuity_lost_events():
+    return [
+        e for e in event_svc.get_all_events()
+        if e["event_type"] == "agent_continuity_lost"
+    ]
+
+
+def test_sequence_reset_without_instance_does_not_freeze_the_baseline():
+    """
+    Regresia centrală închisă de acest bloc.
+
+    Cu baseline-ul blocat pe valoarea rulării precedente, fiecare heartbeat până la
+    depășirea ei ar fi aruncat ca „pachet reordonat”, iar fereastra oarbă ar dura
+    exact cât a durat rularea precedentă — ore sau săptămâni, fără plafon.
+    """
+    _register()
+    _heartbeat("agent-1", sequence=500, instance_id=None)
+
+    body = _heartbeat("agent-1", sequence=1, instance_id=None).json()
+
+    assert body["status"] == "ok"
+    assert agent_svc.agents_store["agent-1"]["last_sequence"] == 1
+
+
+def test_tracking_resumes_immediately_after_a_sequence_reset():
+    _register()
+    _heartbeat("agent-1", sequence=500, instance_id=None)
+    _heartbeat("agent-1", sequence=1, instance_id=None)
+
+    body = _heartbeat("agent-1", sequence=2, instance_id=None).json()
+
+    assert body["missed_heartbeats"] == 0
+    assert agent_svc.agents_store["agent-1"]["last_sequence"] == 2
+
+
+def test_sequence_reset_without_instance_is_never_reported_as_restart():
+    """
+    Serverul nu are dovada unei reporniri. A o declara ar fabrica un fals pozitiv.
+    """
+    _register()
+    _heartbeat("agent-1", sequence=500, instance_id=None)
+
+    body = _heartbeat("agent-1", sequence=1, instance_id=None).json()
+
+    assert body["restart_detected"] is False
+    assert _restart_events() == []
+    assert agent_svc.agents_store["agent-1"].get("restart_count", 0) == 0
+
+
+def test_sequence_reset_without_instance_is_surfaced_as_a_coverage_gap():
+    """Baseline-ul refăcut tăcut ar ascunde faptul că agentul nu e urmăribil."""
+    _register()
+    _heartbeat("agent-1", sequence=500, instance_id=None)
+
+    body = _heartbeat("agent-1", sequence=1, instance_id=None).json()
+
+    assert body["continuity_lost"] is True
+    events = _continuity_lost_events()
+    assert len(events) == 1
+    assert events[0]["agent_id"] == "agent-1"
+    assert agent_svc.agents_store["agent-1"]["continuity_losses_total"] == 1
+
+
+def test_reordered_packet_within_a_known_incarnation_is_still_ignored():
+    """
+    Relaxarea se aplică strict în absența incarnării. Cu incarnare cunoscută,
+    regresia rămâne pachet întârziat, iar baseline-ul nu se atinge — altfel
+    patch-ul ar fi reintrodus regula eliminată de comitul afe160d.
+    """
+    _register()
+    _heartbeat("agent-1", sequence=5, instance_id="inst-A")
+
+    body = _heartbeat("agent-1", sequence=4, instance_id="inst-A").json()
+
+    assert body["continuity_lost"] is False
+    assert agent_svc.agents_store["agent-1"]["last_sequence"] == 5
+    assert _continuity_lost_events() == []
+
+
+def test_first_incarnation_discards_a_baseline_left_by_a_legacy_run():
+    """
+    Upgrade de agent: rulările legacy lasă un last_sequence care nu aparține
+    incarnării nou raportate. Comparat cu ea, ar bloca baseline-ul din nou —
+    de data asta chiar pentru un agent corect, actualizat.
+    """
+    _register()
+    _heartbeat("agent-1", sequence=500, instance_id=None)      # build vechi
+
+    body = _heartbeat("agent-1", sequence=1, instance_id="inst-A").json()  # build nou
+
+    assert body["status"] == "ok"
+    assert body["restart_detected"] is False
+    assert body["continuity_lost"] is False
+    assert agent_svc.agents_store["agent-1"]["last_sequence"] == 1

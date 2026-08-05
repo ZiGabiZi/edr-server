@@ -31,14 +31,20 @@ class HeartbeatResult:
     Pe lângă snapshot-ul agentului (sau None dacă agentul nu e înregistrat),
     poartă verdictul de continuitate al heartbeat-ului:
         - restart_detected: incarnarea agentului (agent_instance_id) s-a schimbat
-          => procesul a repornit.
+          => procesul a repornit. Verdict autoritar: serverul are dovada.
         - missed_heartbeats: câte heartbeat-uri au lipsit în golul de secvență curent.
+        - continuity_lost: contorul de secvență a regresat, dar agentul nu raportează
+          incarnarea, deci cauza nu poate fi stabilită. NU este un verdict de
+          repornire — este declarația explicită că serverul nu poate garanta
+          continuitatea pentru acest agent. Cele două se exclud reciproc prin
+          construcție: unde există incarnare există verdict, unde nu, nu.
     """
     agent: Optional[Dict[str, Any]]
     restart_detected: bool = False
     missed_heartbeats: int = 0
     sequence: Optional[int] = None
     instance_id: Optional[str] = None
+    continuity_lost: bool = False
 
 
 class AgentIdConflictError(Exception):
@@ -64,17 +70,27 @@ def record_heartbeat(
         - instance_id != last       -> proces nou => RESTART, indiferent de secvență.
           Baseline-ul de secvență se resetează la secvența noii incarnări.
 
-    Semantica secvenței (contor monoton per proces al agentului, evaluat doar în
-    interiorul aceleiași incarnări):
+    Regulă de domeniu pentru contorul de secvență:
+        last_sequence este comparabil DOAR în interiorul unei incarnări cunoscute și
+        neschimbate. Orice tranziție a incarnării — inclusiv None -> X, când un agent
+        actualizat începe să se identifice — invalidează valoarea memorată, pentru că
+        ea aparține unei rulări diferite.
+
+    Semantica secvenței (contor monoton per proces al agentului):
         - sequence None             -> fără detecție de pierderi (doar last_seen).
         - prima secvență observată  -> stabilim baseline (n-avem cu ce compara).
         - sequence == last_sequence -> retransmisie exactă => ignorat, idempotent.
-        - sequence  < last_sequence -> pachet întârziat/reordonat => ignorat.
-        - sequence  > last+1        -> gol în secvență => (sequence - last - 1) heartbeat-uri pierdute.
+        - sequence  < last_sequence, cu incarnare cunoscută
+                                    -> în aceeași rulare contorul nu poate scădea,
+                                       deci e pachet întârziat/reordonat => ignorat.
+        - sequence  < last_sequence, fără incarnare
+                                    -> cauza nu poate fi stabilită; re-stabilim
+                                       baseline-ul și raportăm continuity_lost.
+        - sequence  > last+1        -> gol în secvență => (sequence - last - 1) pierdute.
         - sequence == last+1        -> continuitate normală.
 
-    Contoarele cumulative restart_count / missed_heartbeats_total sunt persistate pe
-    înregistrarea agentului pentru observabilitate.
+    Contoarele cumulative restart_count / missed_heartbeats_total / continuity_losses_total
+    sunt persistate pe înregistrarea agentului pentru observabilitate.
     """
     with agents_lock:
         agent = agents_store.get(agent_id)
@@ -89,7 +105,12 @@ def record_heartbeat(
 
             if last_instance is None:
                 # Prima incarnare cunoscută pentru acest agent -> doar baseline.
+                # Un last_sequence memorat aici provine dintr-o rulare care nu s-a
+                # identificat (build legacy, dinaintea lui agent_instance_id) și nu
+                # aparține acestei incarnări. Păstrat, ar bloca baseline-ul exact ca
+                # în cazul tratat mai jos, la primul heartbeat al agentului nou.
                 agent["agent_instance_id"] = instance_id
+                agent.pop("last_sequence", None)
             elif instance_id != last_instance:
                 # Proces repornit (crash, kill, tampering). Adoptăm noua incarnare
                 # și resetăm baseline-ul de secvență la ea.
@@ -103,7 +124,9 @@ def record_heartbeat(
                     sequence=sequence,
                     instance_id=instance_id,
                 )
+
         missed = 0
+        continuity_lost = False
 
         if sequence is not None:
             last_sequence = agent.get("last_sequence")
@@ -112,16 +135,36 @@ def record_heartbeat(
                 agent["last_sequence"] = sequence                    # baseline
             elif sequence == last_sequence:
                 # Duplicat exact (retransmisie) -> idempotent, nu modificăm nimic.
+                # Valabil indiferent de incarnare: o retransmisie e inofensivă.
                 return HeartbeatResult(
                     agent=agent.copy(), restart_detected=False,
                     missed_heartbeats=0, sequence=sequence, instance_id=instance_id,
                 )
             elif sequence < last_sequence:
-                # Duplicat vechi / reordonat -> ignorat pentru continuitate.
-                return HeartbeatResult(
-                    agent=agent.copy(), restart_detected=False,
-                    missed_heartbeats=0, sequence=sequence, instance_id=instance_id,
+                if instance_id is not None:
+                    # Aici incarnarea e obligatoriu cunoscută ȘI neschimbată: dacă
+                    # ar fi fost nouă, blocul 1 a golit last_sequence și am fi ajuns
+                    # pe ramura de baseline; dacă ar fi diferit, am fi ieșit deja cu
+                    # verdict de repornire. În interiorul aceleiași rulări contorul
+                    # nu poate scădea -> pachet întârziat/reordonat, ignorat.
+                    return HeartbeatResult(
+                        agent=agent.copy(), restart_detected=False,
+                        missed_heartbeats=0, sequence=sequence, instance_id=instance_id,
+                    )
+
+                # Fără incarnare, regresia are două explicații posibile — contor
+                # resetat de o repornire, sau pachet reordonat — pe care serverul nu
+                # le poate departaja. Alegerea de a ignora regresia costă enorm:
+                # baseline-ul ar rămâne blocat pe valoarea rulării precedente, iar
+                # fiecare heartbeat până la depășirea ei ar fi aruncat. Cum contorul
+                # nou crește cu aceeași cadență cu care a crescut cel vechi, fereastra
+                # oarbă ar dura exact cât a durat rularea precedentă — fără plafon.
+                # Preferăm baseline-ul refăcut și lacuna declarată deschis.
+                agent["last_sequence"] = sequence
+                agent["continuity_losses_total"] = (
+                    agent.get("continuity_losses_total", 0) + 1
                 )
+                continuity_lost = True
             else:
                 if sequence > last_sequence + 1:
                     missed = sequence - last_sequence - 1
@@ -136,6 +179,7 @@ def record_heartbeat(
             missed_heartbeats=missed,
             sequence=sequence,
             instance_id=instance_id,
+            continuity_lost=continuity_lost,
         )
 
 

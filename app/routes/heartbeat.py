@@ -41,6 +41,27 @@ def receive_heartbeat(agent_id: str, body: HeartbeatRequest) -> HeartbeatRespons
             )
         )
 
+    if result.continuity_lost:
+        # Lacună de acoperire, nu constatare de securitate: serverul spune explicit
+        # că nu poate garanta continuitatea pentru acest agent. Deliberat NU e
+        # agent_restart — nu avem dovada unei reporniri, iar un verdict inventat ar
+        # fi un fals pozitiv într-un sistem al cărui rost e să nu producă așa ceva.
+        create_event(
+            EventCreateRequest(
+                agent_id=agent_id,
+                event_type="agent_continuity_lost",
+                agent_instance_id=None,
+                occurred_at=utc_now(),
+                description=(
+                    f"Heartbeat sequence regressed to {result.sequence} from an agent "
+                    f"that does not report its process incarnation. A restart cannot "
+                    f"be distinguished from a reordered packet; the sequence baseline "
+                    f"was reset so continuity tracking can resume. Upgrade the agent "
+                    f"to a build that sends agent_instance_id."
+                ),
+            )
+        )
+
     return HeartbeatResponse(
         status="ok",
         agent_id=agent_id,
@@ -48,4 +69,5 @@ def receive_heartbeat(agent_id: str, body: HeartbeatRequest) -> HeartbeatRespons
         next_heartbeat_seconds=HEARTBEAT_INTERVAL_SECONDS,
         restart_detected=result.restart_detected,
         missed_heartbeats=result.missed_heartbeats,
+        continuity_lost=result.continuity_lost,
     )
