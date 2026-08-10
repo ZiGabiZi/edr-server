@@ -1,7 +1,9 @@
 from pydantic import BaseModel
 from typing import Optional
 
-class HeartbeatRequest(BaseModel):
+from app.schemas.wire import WireModel
+
+class HeartbeatRequest(WireModel):
     agent_id: str
     agent_version: Optional[str] = None
     # Contor monoton per proces al agentului: pornește de la 1 la fiecare lansare

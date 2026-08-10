@@ -2,10 +2,11 @@
 Schemele Pydantic trebuie să corespundă contractului de fir partajat cu agentul.
 
 De ce există acest fișier:
-    Schemele rulează cu extra="ignore". O cheie pe care schema nu o declară este
-    aruncată tăcut: agentul primește 200 OK, serverul nu loghează nimic, iar
-    câmpul rămâne None. Redenumirea unui câmp de aici nu produce nicio eroare
-    nicăieri — produce date lipsă, descoperite luni mai târziu.
+    O cheie pe care schema nu o declară este aruncată la validare: agentul
+    primește 200 OK, iar câmpul rămâne None. WireModel o loghează acum cu numele
+    ei (app/schemas/wire.py), dar abia când un payload greșit ajunge efectiv la
+    server, într-o rulare reală. Redenumirea unui câmp de aici nu produce nicio
+    eroare nicăieri — produce date lipsă, descoperite luni mai târziu.
 
     edr-agent nu poate importa modulele acestea (repo-uri separate), deci până
     acum își ținea propria copie a numelor, actualizată doar din memoria unui om.
@@ -118,7 +119,7 @@ def test_schema_declares_exactly_the_fields_the_contract_lists(model_name: str):
     assert not missing_from_schema, (
         f"{schema.__name__} nu mai declară câmpuri promise de contract: "
         f"{sorted(missing_from_schema)}. Au fost redenumite sau șterse; orice "
-        f"payload care le mai trimite e aruncat tăcut de Pydantic. Dacă schimbarea "
+        f"payload care le mai trimite e aruncat la validare. Dacă schimbarea "
         f"e intenționată, actualizează contracts/wire-contract.json în ambele "
         f"repo-uri și incrementează contract_version."
     )

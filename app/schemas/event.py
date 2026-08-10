@@ -1,8 +1,10 @@
 from typing import Optional
 from pydantic import BaseModel
 
+from app.schemas.wire import WireModel
 
-class EventCreateRequest(BaseModel):
+
+class EventCreateRequest(WireModel):
     agent_id: str
     event_type: str
     client_event_id: Optional[str] = None
