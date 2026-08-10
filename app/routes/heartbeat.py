@@ -69,5 +69,7 @@ def receive_heartbeat(agent_id: str, body: HeartbeatRequest) -> HeartbeatRespons
         next_heartbeat_seconds=HEARTBEAT_INTERVAL_SECONDS,
         restart_detected=result.restart_detected,
         missed_heartbeats=result.missed_heartbeats,
+        failed_attempts=result.failed_attempts,
+        silence_seconds=result.silence_seconds,
         continuity_lost=result.continuity_lost,
     )

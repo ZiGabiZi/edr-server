@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 import app.services.agent_service as agent_svc
 import app.services.event_service as event_svc
 from app.main import app
+from datetime import datetime, timedelta, timezone
 
 client = TestClient(app)
 
@@ -68,16 +69,22 @@ def test_monotonic_sequence_is_normal():
     assert _restart_events() == []
 
 
-def test_sequence_gap_counts_missed_heartbeats():
+def test_sequence_gap_counts_failed_attempts_not_missed_windows():
+    """
+    Golul de secvență numără încercări, nu ferestre. Aici nu trece timp între
+    heartbeat-uri, deci mărimea temporală trebuie să rămână zero — exact
+    distincția pe care numele vechi al câmpului o ascundea.
+    """
     _register()
     _heartbeat("agent-1", sequence=1)
 
-    # sarim peste 2, 3, 4 -> 3 heartbeat-uri pierdute
+    # sarim peste 2, 3, 4 -> 3 încercări care nu au ajuns
     body = _heartbeat("agent-1", sequence=5).json()
 
-    assert body["missed_heartbeats"] == 3
+    assert body["failed_attempts"] == 3
+    assert body["missed_heartbeats"] == 0
     assert body["restart_detected"] is False
-    assert agent_svc.agents_store["agent-1"]["missed_heartbeats_total"] == 3
+    assert agent_svc.agents_store["agent-1"]["failed_attempts_total"] == 3
     # gap-ul nu e un restart -> niciun eveniment agent_restart
     assert _restart_events() == []
 
@@ -246,3 +253,27 @@ def test_first_incarnation_discards_a_baseline_left_by_a_legacy_run():
     assert body["restart_detected"] is False
     assert body["continuity_lost"] is False
     assert agent_svc.agents_store["agent-1"]["last_sequence"] == 1
+
+def _backdate_last_seen(agent_id: str, seconds_ago: float):
+    """Simulează tăcere fără să aștepte: singura sursă a duratei e last_seen."""
+    agent_svc.agents_store[agent_id]["last_seen"] = (
+        datetime.now(timezone.utc) - timedelta(seconds=seconds_ago)
+    ).isoformat()
+
+def test_missed_heartbeats_measure_elapsed_time_not_the_sequence_gap():
+    """
+    Scenariul din constatarea de review: server jos 10 minute, la interval de 10s.
+    Backoff-ul agentului (10, 20, 40, 80, 160, 300s...) produce ~6 încercări
+    eșuate pentru ~60 de ferestre ratate. Dacă cele două numere ar fi din nou
+    derivate din aceeași sursă, acest test pică.
+    """
+    _register()
+    _heartbeat("agent-1", sequence=1)
+
+    _backdate_last_seen("agent-1", seconds_ago=600)
+    body = _heartbeat("agent-1", sequence=8).json()
+
+    assert body["failed_attempts"] == 6
+    assert body["missed_heartbeats"] == 59        # 600s / 10s, minus fereastra curentă
+    assert body["silence_seconds"] >= 600
+    assert agent_svc.agents_store["agent-1"]["missed_heartbeats_total"] == 59

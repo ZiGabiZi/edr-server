@@ -16,6 +16,50 @@ HEARTBEAT_INTERVAL_SECONDS = 10
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
+def _parse_timestamp(raw: Any) -> Optional[datetime]:
+    """
+    Convertește un timestamp ISO din store într-un datetime aware.
+
+    Store-ul păstrează timpul ca șir ISO (vezi _utc_now), deci orice calcul de
+    vârstă trece prin parsare. Valorile scrise de build-uri mai vechi pot fi
+    naive; le interpretăm ca UTC, pentru că _utc_now a produs mereu UTC.
+    """
+    if not raw:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except (ValueError, TypeError):
+        return None
+
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed
+
+
+def _missed_windows(silence_seconds: float) -> int:
+    """
+    Traduce tăcerea măsurată în număr de ferestre de heartbeat ratate.
+
+    De ce nu se poate deriva din secvență:
+        Contorul agentului crește o dată per *încercare*, iar încercările sunt
+        distanțate de backoff exponențial (edr-agent/services/backoff.py: bază =
+        interval, dublare, plafon 300s). În timpul unei pene lungi agentul rărește
+        deliberat încercările, deci golul de secvență descrie retry-urile, nu
+        durata. La 10s interval, o pană de 10 minute produce ~7 încercări față de
+        ~86 ferestre reale — iar raportul crește cu durata, după plafonare.
+
+    Intervalul așteptat e cunoscut aici fără să fie cerut agentului: serverul îl
+    dictează el însuși (HEARTBEAT_INTERVAL_SECONDS, trimis ca next_heartbeat_seconds).
+    Se scade fereastra curentă — heartbeat-ul care tocmai a sosit — ca o cadență
+    normală să dea zero.
+    """
+    if HEARTBEAT_INTERVAL_SECONDS <= 0:
+        return 0
+
+    return max(0, round(silence_seconds / HEARTBEAT_INTERVAL_SECONDS) - 1)
+
 
 def _model_to_dict(model: AgentRegisterRequest) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
@@ -32,7 +76,15 @@ class HeartbeatResult:
     poartă verdictul de continuitate al heartbeat-ului:
         - restart_detected: incarnarea agentului (agent_instance_id) s-a schimbat
           => procesul a repornit. Verdict autoritar: serverul are dovada.
-        - missed_heartbeats: câte heartbeat-uri au lipsit în golul de secvență curent.
+        - missed_heartbeats: câte *ferestre* de heartbeat au fost ratate, derivate
+          din tăcerea măsurată pe ceasul serverului. Aceasta este mărimea care
+          răspunde la întrebarea operatorului: cât timp a fost endpoint-ul
+          neacoperit.
+        - failed_attempts: câte *încercări* de heartbeat nu au ajuns, derivate din
+          golul de secvență. NU este durata penei — agentul distanțează
+          încercările prin backoff exponențial, deci cele două diverg cu un ordin
+          de mărime la orice pană mai lungă decât câteva intervale.
+        - silence_seconds: tăcerea efectivă dintre acest heartbeat și precedentul.
         - continuity_lost: contorul de secvență a regresat, dar agentul nu raportează
           incarnarea, deci cauza nu poate fi stabilită. NU este un verdict de
           repornire — este declarația explicită că serverul nu poate garanta
@@ -42,6 +94,8 @@ class HeartbeatResult:
     agent: Optional[Dict[str, Any]]
     restart_detected: bool = False
     missed_heartbeats: int = 0
+    failed_attempts: int = 0
+    silence_seconds: float = 0.0
     sequence: Optional[int] = None
     instance_id: Optional[str] = None
     continuity_lost: bool = False
@@ -60,8 +114,8 @@ def record_heartbeat(
 ) -> HeartbeatResult:
     """
     Actualizează last_seen pentru agentul dat în mod atomic și evaluează continuitatea
-    heartbeat-ului pe două axe independente: incarnarea procesului (repornire) și
-    contorul de secvență (heartbeat-uri pierdute).
+    heartbeat-ului pe trei axe independente: incarnarea procesului (repornire),
+    tăcerea măsurată (ferestre ratate) și contorul de secvență (încercări eșuate).
 
     Repornirea e detectată autoritar prin agent_instance_id (identificator generat la
     pornirea procesului agentului), nu prin regresia secvenței:
@@ -70,6 +124,14 @@ def record_heartbeat(
         - instance_id != last       -> proces nou => RESTART, indiferent de secvență.
           Baseline-ul de secvență se resetează la secvența noii incarnări.
 
+    De ce durata se măsoară separat de secvență:
+        Contorul agentului crește o dată per încercare, iar încercările sunt rărite
+        de backoff exponențial exact cât timp serverul e jos. Golul de secvență
+        răspunde deci la „câte încercări nu au ajuns", nu la „cât timp a lipsit
+        agentul". Serverul are a doua mărime din surse proprii — last_seen și
+        cadența pe care o dictează el însuși — deci nu are nevoie de niciun câmp nou
+        pe fir și nici de încredere în ceasul endpoint-ului. Vezi _missed_windows.
+
     Regulă de domeniu pentru contorul de secvență:
         last_sequence este comparabil DOAR în interiorul unei incarnări cunoscute și
         neschimbate. Orice tranziție a incarnării — inclusiv None -> X, când un agent
@@ -77,7 +139,7 @@ def record_heartbeat(
         ea aparține unei rulări diferite.
 
     Semantica secvenței (contor monoton per proces al agentului):
-        - sequence None             -> fără detecție de pierderi (doar last_seen).
+        - sequence None             -> fără detecție de încercări pierdute.
         - prima secvență observată  -> stabilim baseline (n-avem cu ce compara).
         - sequence == last_sequence -> retransmisie exactă => ignorat, idempotent.
         - sequence  < last_sequence, cu incarnare cunoscută
@@ -86,18 +148,39 @@ def record_heartbeat(
         - sequence  < last_sequence, fără incarnare
                                     -> cauza nu poate fi stabilită; re-stabilim
                                        baseline-ul și raportăm continuity_lost.
-        - sequence  > last+1        -> gol în secvență => (sequence - last - 1) pierdute.
-        - sequence == last+1        -> continuitate normală.
+        - sequence  > last+1        -> gol => (sequence - last - 1) încercări eșuate.
+        - sequence == last+1        -> continuitate normală a încercărilor.
 
-    Contoarele cumulative restart_count / missed_heartbeats_total / continuity_losses_total
-    sunt persistate pe înregistrarea agentului pentru observabilitate.
+    Contoarele cumulative restart_count / missed_heartbeats_total /
+    failed_attempts_total / continuity_losses_total sunt persistate pe înregistrarea
+    agentului pentru observabilitate.
     """
     with agents_lock:
         agent = agents_store.get(agent_id)
         if agent is None:
             return HeartbeatResult(agent=None)
 
-        agent["last_seen"] = _utc_now()
+        # Tăcerea se măsoară ÎNAINTE de suprascrierea lui last_seen: valoarea veche
+        # e singura urmă a momentului în care agentul a fost auzit ultima oară.
+        previous_last_seen = _parse_timestamp(agent.get("last_seen"))
+        now = datetime.now(timezone.utc)
+        agent["last_seen"] = now.isoformat()
+
+        silence_seconds = (
+            0.0
+            if previous_last_seen is None
+            else max(0.0, (now - previous_last_seen).total_seconds())
+        )
+        missed_windows = _missed_windows(silence_seconds)
+
+        # Acumulat aici, o singură dată per heartbeat primit, înaintea oricărei
+        # ramuri de secvență: tăcerea a existat inclusiv înaintea unei retransmisii,
+        # iar ramurile care ies devreme (duplicat, pachet reordonat, repornire) ar
+        # pierde-o dacă acumularea ar sta mai jos.
+        if missed_windows:
+            agent["missed_heartbeats_total"] = (
+                agent.get("missed_heartbeats_total", 0) + missed_windows
+            )
 
         # 1) REPORNIRE — autoritar, prin schimbarea incarnării.
         if instance_id is not None:
@@ -117,15 +200,21 @@ def record_heartbeat(
                 agent["restart_count"] = agent.get("restart_count", 0) + 1
                 agent["agent_instance_id"] = instance_id
                 agent["last_sequence"] = sequence
+                # failed_attempts rămâne 0: golul de secvență nu are sens peste
+                # granița dintre două incarnări. missed_heartbeats rămâne însă
+                # relevant — timpul cât endpoint-ul a fost neacoperit e real,
+                # indiferent care proces l-a lăsat descoperit.
                 return HeartbeatResult(
                     agent=agent.copy(),
                     restart_detected=True,
-                    missed_heartbeats=0,
+                    missed_heartbeats=missed_windows,
+                    failed_attempts=0,
+                    silence_seconds=silence_seconds,
                     sequence=sequence,
                     instance_id=instance_id,
                 )
 
-        missed = 0
+        failed_attempts = 0
         continuity_lost = False
 
         if sequence is not None:
@@ -134,11 +223,13 @@ def record_heartbeat(
             if last_sequence is None:
                 agent["last_sequence"] = sequence                    # baseline
             elif sequence == last_sequence:
-                # Duplicat exact (retransmisie) -> idempotent, nu modificăm nimic.
+                # Duplicat exact (retransmisie) -> idempotent pe axa secvenței.
                 # Valabil indiferent de incarnare: o retransmisie e inofensivă.
                 return HeartbeatResult(
                     agent=agent.copy(), restart_detected=False,
-                    missed_heartbeats=0, sequence=sequence, instance_id=instance_id,
+                    missed_heartbeats=missed_windows, failed_attempts=0,
+                    silence_seconds=silence_seconds,
+                    sequence=sequence, instance_id=instance_id,
                 )
             elif sequence < last_sequence:
                 if instance_id is not None:
@@ -149,7 +240,9 @@ def record_heartbeat(
                     # nu poate scădea -> pachet întârziat/reordonat, ignorat.
                     return HeartbeatResult(
                         agent=agent.copy(), restart_detected=False,
-                        missed_heartbeats=0, sequence=sequence, instance_id=instance_id,
+                        missed_heartbeats=missed_windows, failed_attempts=0,
+                        silence_seconds=silence_seconds,
+                        sequence=sequence, instance_id=instance_id,
                     )
 
                 # Fără incarnare, regresia are două explicații posibile — contor
@@ -167,16 +260,18 @@ def record_heartbeat(
                 continuity_lost = True
             else:
                 if sequence > last_sequence + 1:
-                    missed = sequence - last_sequence - 1
-                    agent["missed_heartbeats_total"] = (
-                        agent.get("missed_heartbeats_total", 0) + missed
+                    failed_attempts = sequence - last_sequence - 1
+                    agent["failed_attempts_total"] = (
+                        agent.get("failed_attempts_total", 0) + failed_attempts
                     )
                 agent["last_sequence"] = sequence
 
         return HeartbeatResult(
             agent=agent.copy(),
             restart_detected=False,
-            missed_heartbeats=missed,
+            missed_heartbeats=missed_windows,
+            failed_attempts=failed_attempts,
+            silence_seconds=silence_seconds,
             sequence=sequence,
             instance_id=instance_id,
             continuity_lost=continuity_lost,
