@@ -3,6 +3,8 @@ __pycache__/
 .venv/
 .env
 *.db
+*.log
+logs/
 *.swp
 .vscode/
 .claude/
