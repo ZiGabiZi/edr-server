@@ -27,7 +27,7 @@ from typing import Optional
 import pytest
 
 from app.schemas.agent import AgentRegisterRequest
-from app.schemas.event import EventCreateRequest
+from app.schemas.event import EventCreateRequest, EventMeasurements
 from app.schemas.heartbeat import HeartbeatDirective, HeartbeatRequest, HeartbeatResponse
 
 
@@ -49,6 +49,8 @@ CONTRACT_MODELS = {
     "heartbeat_request": HeartbeatRequest,
     "heartbeat_response": HeartbeatResponse,
     "heartbeat_directive": HeartbeatDirective,
+    "event_create_request": EventCreateRequest,
+    "event_measurements": EventMeasurements,
 }
 
 
