@@ -39,6 +39,25 @@ CONTRACT_RELATIVE_PATH = Path("contracts") / "wire-contract.json"
 PEER_REPO_NAME = "edr-agent"
 PEER_PATH_ENV_VAR = "EDR_AGENT_PATH"
 
+# Comută absența repo-ului pereche între skip și eșec.
+#
+#   "1"    — obligatoriu: absența e eșec de suită
+#   "0"    — opțional: absența e skip
+#   nesetat — obligatoriu dacă rulăm sub CI, opțional altfel
+#
+# De ce nu e simplu skip întotdeauna: verificările cross-repo sunt singurele
+# care confruntă cele două părți ale contractului, iar un skip e o linie gri
+# printre sute de puncte verzi. Pe o mașină de integrare care clonează un
+# singur repo, cel mai puternic test din suită tace exact acolo unde ar trebui
+# să vorbească — regresia trece, iar raportul spune „totul verde".
+#
+# De ce nu e simplu eșec întotdeauna: o clonă singură trebuie să rămână
+# testabilă. Cine ia doar acest repo și rulează suita nu a greșit cu nimic.
+#
+# CI (setat de GitHub Actions, GitLab, CircleCI, Azure și altele) desparte
+# cele două situații fără ca nimeni să trebuiască să-și amintească ceva.
+PEER_REQUIRED_ENV_VAR = "EDR_REQUIRE_PEER_REPO"
+
 
 # Legătura dintre numele logice din contract și modelele care le implementează.
 # Un model adăugat în contract fără intrare aici ar rămâne nevalidat — testul
@@ -49,7 +68,6 @@ CONTRACT_MODELS = {
     "heartbeat_request": HeartbeatRequest,
     "heartbeat_response": HeartbeatResponse,
     "heartbeat_directive": HeartbeatDirective,
-    "event_create_request": EventCreateRequest,
     "event_measurements": EventMeasurements,
 }
 
@@ -99,6 +117,46 @@ def find_peer_repo() -> Optional[Path]:
     sibling = SERVER_REPO_ROOT.parent / PEER_REPO_NAME
 
     return sibling if (sibling / CONTRACT_RELATIVE_PATH).is_file() else None
+
+
+def peer_repo_is_required() -> bool:
+    """Dacă absența repo-ului pereche trebuie tratată ca eșec, nu ca skip."""
+    configured = os.environ.get(PEER_REQUIRED_ENV_VAR)
+
+    if configured is not None:
+        return configured.strip().lower() in {"1", "true", "yes"}
+
+    return bool(os.environ.get("CI"))
+
+
+def require_peer_repo(what_goes_unverified: str) -> Path:
+    """
+    Repo-ul pereche, sau capătul testului — skip ori eșec, după mediu.
+
+    what_goes_unverified numește exact ce rămâne neverificat. Mesajul ajunge
+    și în raportul de skip, și în cel de eșec: cine îl citește trebuie să afle
+    ce anume nu s-a verificat, nu doar că un fișier lipsea.
+    """
+    peer_repo = find_peer_repo()
+
+    if peer_repo is not None:
+        return peer_repo
+
+    message = (
+        f"{PEER_REPO_NAME} nu a fost găsit lângă server, deci {what_goes_unverified} "
+        f"rămâne neverificat în această rulare. Clonează cele două repo-uri "
+        f"alături, sau indică {PEER_PATH_ENV_VAR} către clona {PEER_REPO_NAME}."
+    )
+
+    if peer_repo_is_required():
+        pytest.fail(
+            f"{message} Rulare marcată ca obligatorie "
+            f"({PEER_REQUIRED_ENV_VAR}=1 sau CI setat). Dacă acest job chiar "
+            f"clonează un singur repo, setează {PEER_REQUIRED_ENV_VAR}=0 — "
+            f"explicit, ca golul să fie o decizie, nu o scăpare."
+        )
+
+    pytest.skip(message)
 
 
 @pytest.mark.parametrize("model_name", sorted(CONTRACT_MODELS))
@@ -201,15 +259,9 @@ def test_the_peer_repository_carries_the_same_contract():
     fișierul o rezolvă — doar că mai greu de observat, pentru că acum arată ca un
     mecanism care funcționează.
     """
-    peer_repo = find_peer_repo()
-
-    if peer_repo is None:
-        pytest.skip(
-            "edr-agent nu a fost găsit lângă server; sincronizarea celor două "
-            "exemplare rămâne neverificată în această rulare. Setează "
-            "EDR_AGENT_PATH pentru a o verifica."
-        )
-
+    peer_repo = require_peer_repo(
+        "sincronizarea celor două exemplare de contract"
+    )
     peer_contract = load_contract(peer_repo)
 
     # Comparăm JSON-ul parsat, nu octeții: repo-urile sunt clonate și pe Windows,
