@@ -6,12 +6,29 @@ from app.schemas.wire import WireModel
 
 # Valorile acceptate pentru hash_status. 'ok' e singura care poate insoti un
 # sha256. Restul numesc motivul absentei lui, nu doar o absenta tacuta:
-#   unstable    — plafonul de asteptare a stabilizarii a fost depasit
-#   unreadable  — fisierul n-a putut fi citit (lock, permisiuni)
-#   too_large   — fisierul depaseste max_hash_bytes, nu s-a incercat hashing
-#   vanished    — fisierul a disparut intre detectie si hashing
+#   unstable          — plafonul de asteptare a stabilizarii a fost depasit
+#   unreadable        — fisierul n-a putut fi citit (lock, permisiuni)
+#   too_large         — fisierul depaseste max_hash_bytes, nu s-a incercat hashing
+#   vanished          — fisierul a disparut intre detectie si hashing
+#   skipped_capacity  — coada de hashing era plina (v4)
+#   skipped_shutdown  — agentul se oprea, bugetul de hashing a expirat (v4)
+#
+# Ultimele doua descriu AGENTUL, nu fisierul. 'unstable' spune ca fisierul nu
+# s-a linistit; 'skipped_*' spun ca observatorul era sub presiune sau se oprea,
+# in timp ce fisierul putea fi perfect stabil. Confundate, registrul de
+# divulgare de la Etapa 3 nu ar mai putea separa costul impus de obiectul
+# observat de costul impus de observator. Numele oglindesc deliberat
+# SettleTracker.PendingFile.forced_reason din agent ('capacity', 'shutdown').
 VALID_HASH_STATUSES = frozenset(
-    {"ok", "unstable", "unreadable", "too_large", "vanished"}
+    {
+        "ok",
+        "unstable",
+        "unreadable",
+        "too_large",
+        "vanished",
+        "skipped_capacity",
+        "skipped_shutdown",
+    }
 )
 
 
