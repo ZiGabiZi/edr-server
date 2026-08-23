@@ -168,10 +168,20 @@ def get_enrollment_secret() -> str:
 
         if path is not None and path.exists():
             try:
-                stored = path.read_text(encoding="utf-8").strip()
+                # utf-8-sig: fișierul poate fi scris de un operator pe Windows,
+                # unde uneltele obișnuite adaugă BOM. Citit ca utf-8 curat, BOM-ul
+                # ar rămâne lipit de secret — iar .strip() nu îl elimină, nefiind
+                # spațiu alb. Secretul serverului n-ar mai corespunde niciodată
+                # celui de pe endpoint, fără ca nimic să spună de ce.
+                stored = path.read_text(encoding="utf-8-sig").replace("﻿", "").strip()
             except OSError as error:
                 raise RuntimeError(
                     f"Could not read enrollment secret from {path}: {error}"
+                ) from error
+            except UnicodeDecodeError as error:
+                raise RuntimeError(
+                    f"Enrollment secret file {path} is not valid UTF-8: {error}. "
+                    f"Save it as plain ASCII text, without a byte order mark."
                 ) from error
 
             if stored:
@@ -220,11 +230,27 @@ def verify_enrollment_secret(presented: Optional[str]) -> bool:
     diferit, iar diferența de durată e măsurabilă peste multe cereri. Aici
     contează, spre deosebire de cheile de agent: secretul e comparat direct cu
     o valoare cunoscută, nu căutat într-un dicționar după amprentă.
+
+    TypeError NU e o eroare de programare aici, e o intrare ostilă. Antetele
+    HTTP se decodează latin-1, deci un client poate trimite oricând octeți care
+    devin caractere non-ASCII, iar compare_digest refuză să compare șiruri cu
+    non-ASCII. Nettratată, excepția ar fi ieșit din rută ca 500 — adică un
+    curl scris de mână ar fi produs eroare de server pe frontiera de încredere,
+    în loc de un refuz. Un secret care nu poate fi comparat nu poate fi corect,
+    deci răspunsul este False.
     """
     if not presented:
         return False
 
-    return hmac.compare_digest(presented, get_enrollment_secret())
+    try:
+        return hmac.compare_digest(presented, get_enrollment_secret())
+    except TypeError:
+        logger.warning(
+            "Rejected an enrollment attempt whose secret contains non-ASCII "
+            "characters. A credential file saved with a byte order mark looks "
+            "exactly like this from the server side."
+        )
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -245,7 +271,10 @@ def _load_keys_locked() -> None:
         return
 
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig si aici, pentru simetrie cu restul fisierelor citite de pe
+        # disc: fisierul e scris de server, dar poate ajunge sa fie editat sau
+        # restaurat de un om, cu o unealta care adauga BOM.
+        raw = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, json.JSONDecodeError) as error:
         # Fail-closed pe conținut, nu pe pornire: pornim cu depozit gol, deci
         # nimeni nu e autentificat pe baza unui fișier pe care nu-l putem citi.

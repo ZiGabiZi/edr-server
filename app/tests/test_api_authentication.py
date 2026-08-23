@@ -96,6 +96,52 @@ def test_registration_with_a_wrong_enrollment_secret_is_refused(raw_client):
     assert "agent-1" not in agent_service.agents_store
 
 
+def test_a_non_ascii_enrollment_secret_is_refused_not_a_server_error(raw_client):
+    """
+    Intrare ostilă, nu eroare de programare.
+
+    Antetele HTTP se decodează latin-1, deci un client poate trimite oricând
+    octeți care devin caractere non-ASCII. hmac.compare_digest refuză să compare
+    șiruri cu non-ASCII și ridică TypeError; netratată, excepția ieșea din rută
+    ca 500 — adică un curl scris de mână producea eroare de server pe frontiera
+    de încredere, în loc de un refuz.
+
+    Cazul are și o formă complet nevinovată: un fișier de secret salvat cu BOM
+    arată exact așa privit dinspre server.
+    """
+    response = raw_client.post(
+        "/api/agents/register",
+        json=_registration_body("agent-1"),
+        headers={
+            auth_service.ENROLLMENT_SECRET_HEADER: "﻿secret".encode("utf-8")
+        },
+    )
+
+    assert response.status_code == 401, response.text
+    assert "agent-1" not in agent_service.agents_store
+
+
+def test_an_enrollment_secret_file_with_a_bom_still_matches(tmp_path):
+    """
+    Fișierul de secret al serverului poate fi scris de un operator pe Windows,
+    unde uneltele obișnuite adaugă BOM. Citit ca utf-8 curat, secretul citit de
+    server n-ar mai corespunde niciodată celui de pe endpoint, fără ca nimic să
+    spună de ce: ambele părți ar afișa aceeași valoare la o inspecție vizuală.
+    """
+    secret_file = tmp_path / "enrollment_secret.txt"
+    secret_file.write_bytes("﻿secret-de-pe-disc\n".encode("utf-8"))
+
+    auth_service.reset_for_tests(ENROLLMENT_SECRET)
+    auth_service._enrollment_secret = None
+    auth_service._enrollment_secret_path = secret_file
+
+    try:
+        assert auth_service.get_enrollment_secret() == "secret-de-pe-disc"
+        assert auth_service.verify_enrollment_secret("secret-de-pe-disc") is True
+    finally:
+        auth_service.reset_for_tests(ENROLLMENT_SECRET)
+
+
 def test_events_without_a_key_are_refused(raw_client):
     _enroll(raw_client, "agent-1")
 
