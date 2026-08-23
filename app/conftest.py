@@ -1,9 +1,9 @@
 import pytest
-from fastapi.testclient import TestClient
 
 import app.services.agent_service as agent_service
+import app.services.auth_service as auth_service
 import app.services.event_service as event_service
-from app.main import app
+from app.tests.support import make_test_client
 
 
 @pytest.fixture
@@ -11,7 +11,13 @@ def client():
     agent_service.agents_store.clear()
     event_service.events_store.clear()
     event_service._events_by_client_id.clear()
-    return TestClient(app)
+
+    # Golește depozitul de chei ȘI dezactivează persistența lui: fără asta,
+    # suita ar scrie agent_keys.json în rădăcina repo-ului și ar duce credențiale
+    # dintr-o rulare în următoarea.
+    auth_service.reset_for_tests()
+
+    return make_test_client()
 
 
 @pytest.fixture
@@ -30,4 +36,9 @@ def registered_agent_id(client):
         },
     )
     assert response.status_code == 200, response.text
+
+    # Înrolarea trebuie să fi emis o cheie; fără ea, orice test care scrie
+    # după fixture-ul ăsta ar primi 401, iar cauza ar fi greu de citit.
+    assert "agent_key" in response.json(), response.text
+
     return agent_id

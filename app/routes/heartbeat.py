@@ -1,15 +1,31 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from app.schemas.heartbeat import HeartbeatRequest, HeartbeatDirective, HeartbeatResponse
 from app.schemas.event import EventCreateRequest
+from app.security import authenticated_agent_id, require_identity_match
 from app.services.agent_service import record_heartbeat, HEARTBEAT_INTERVAL_SECONDS
 from app.services.event_service import create_event, utc_now
 
 router = APIRouter(prefix="/api/agents", tags=["Heartbeat"])
 
 @router.post("/{agent_id}/heartbeat")
-def receive_heartbeat(agent_id: str, body: HeartbeatRequest) -> HeartbeatResponse:
+def receive_heartbeat(
+    agent_id: str,
+    body: HeartbeatRequest,
+    caller_agent_id: str = Depends(authenticated_agent_id),
+) -> HeartbeatResponse:
     if agent_id != body.agent_id:
         raise HTTPException(status_code=400, detail="agent_id mismatch")
+
+    # Autentificarea spune cine e apelantul; asta spune că are voie să fie
+    # chiar agentul pe care îl raportează. Fără verificarea de aici, orice
+    # agent cu o cheie validă ar putea trimite heartbeat-uri în numele altei
+    # mașini — adică ar putea ține „online" un endpoint care de fapt tace, sau
+    # ar putea fabrica o repornire pe el prin agent_instance_id.
+    #
+    # Cheia rămâne validă și când agentul NU mai e în registru (restart de
+    # server cu store volatil): depozitul de chei e persistat separat, tocmai
+    # ca răspunsul 'unregistered' + directiva 'reregister' să rămână accesibil.
+    require_identity_match(caller_agent_id, agent_id)
 
     result = record_heartbeat(agent_id, body.sequence, body.agent_instance_id)
 

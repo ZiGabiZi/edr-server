@@ -1,15 +1,16 @@
 from datetime import datetime, timedelta, timezone
 
-from fastapi.testclient import TestClient
-
 import app.services.agent_service as svc
-from app.main import app
+import app.services.auth_service as auth_service
+from app.tests.support import make_test_client
 
-client = TestClient(app)
+client = make_test_client()
 
 
 def setup_function():
     svc.agents_store.clear()
+    auth_service.reset_for_tests()
+    client.forget_keys()
 
 
 def _register(
@@ -77,9 +78,23 @@ def test_heartbeat_revives_offline_agent():
 
 
 def test_heartbeat_for_unknown_agent_requests_reregister():
+    """
+    Scenariul real: serverul a repornit cu store volatil, deci agentul a
+    dispărut din registru — dar cheia lui a supraviețuit, pentru că depozitul
+    de chei e persistat separat.
+
+    De ce contează forma asta a testului: dacă cheile ar fi trăit în aceeași
+    memorie ca agents_store, aici s-ar fi întors 401, iar directiva 'reregister'
+    ar fi devenit inaccesibilă — calea de recuperare a întregului parc ar fi
+    fost tăiată exact de mecanismul care trebuia să o protejeze.
+    """
+    _register("ghost")
+    svc.agents_store.clear()
+
     response = client.post("/api/agents/ghost/heartbeat", json={"agent_id": "ghost"})
     body = response.json()
 
+    assert response.status_code == 200, response.text
     assert body["status"] == "unregistered"
     assert body["directive"]["action"] == "reregister"
 

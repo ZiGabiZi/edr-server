@@ -3,19 +3,20 @@ Teste pentru detecția server-side de heartbeat-uri pierdute și reporniri de ag
 pierderile sunt derivate din contorul de secvență, iar repornirile din agent_instance_id
 (incarnarea procesului), ambele trimise de agent în fiecare heartbeat.
 """
-from fastapi.testclient import TestClient
-
 import app.services.agent_service as agent_svc
+import app.services.auth_service as auth_svc
 import app.services.event_service as event_svc
-from app.main import app
+from app.tests.support import make_test_client
 from datetime import datetime, timedelta, timezone
 
-client = TestClient(app)
+client = make_test_client()
 
 
 def setup_function():
     agent_svc.agents_store.clear()
     event_svc.events_store.clear()
+    auth_svc.reset_for_tests()
+    client.forget_keys()
 
 
 def _register(agent_id: str = "agent-1"):

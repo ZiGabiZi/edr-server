@@ -8,3 +8,8 @@ logs/
 *.swp
 .vscode/
 .claude/
+
+# Secrete de autentificare - nu au ce cauta in istoric sau in backup-uri partajate
+enrollment_secret.txt
+agent_keys.json
+agent_keys.json.tmp
