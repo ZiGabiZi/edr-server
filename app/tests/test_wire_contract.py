@@ -34,6 +34,14 @@ from app.schemas.heartbeat import HeartbeatDirective, HeartbeatRequest, Heartbea
 SERVER_REPO_ROOT = Path(__file__).resolve().parents[2]
 CONTRACT_RELATIVE_PATH = Path("contracts") / "wire-contract.json"
 
+# Documentul de autentificare, ținut lângă contractul de fir dar separat de el:
+# wire-contract.json descrie CORPURI (modele, câmpuri, obligativitate), iar
+# autentificarea trăiește în ANTETE, pe care contractul nu le modelează.
+# Sincronizarea lui între repo-uri contează la fel de mult: numele antetelor sunt
+# scrise de mână în ambele părți, iar o divergență nu produce o eroare de import,
+# ci un 401 permanent care arată exact ca o cheie greșită.
+AUTH_DOC_RELATIVE_PATH = Path("contracts") / "AUTH.md"
+
 # Repo-ul pereche și variabila care îi suprascrie locația. Convenția implicită
 # este că cele două clone stau una lângă alta.
 PEER_REPO_NAME = "edr-agent"
@@ -291,3 +299,41 @@ def test_the_peer_repository_carries_the_same_contract():
     )
 
     assert peer_contract == CONTRACT, "Exemplarele diferă în afara secțiunii 'models'."
+
+
+def _read_auth_document(repo_root: Path) -> str:
+    """
+    Citește AUTH.md normalizând terminatoarele de linie.
+
+    Repo-urile sunt clonate și pe Windows, și prin WSL; o diferență CRLF/LF ar
+    produce un eșec fals care n-are nicio legătură cu numele antetelor.
+    """
+    document = repo_root / AUTH_DOC_RELATIVE_PATH
+
+    if not document.is_file():
+        raise FileNotFoundError(
+            f"Documentul de autentificare lipsește: {document}. Fără el, numele "
+            f"antetelor rămân o convenție ținută minte de un om."
+        )
+
+    return document.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
+
+
+def test_the_peer_repository_carries_the_same_auth_document():
+    """
+    Cele două exemplare de AUTH.md trebuie să spună același lucru.
+
+    Un exemplar actualizat pe o singură parte e mai periculos aici decât la
+    contractul de fir: acolo divergența pică un test de schemă, aici produce un
+    agent care trimite `X-Agent-Key` unui server care așteaptă altceva. Rezultatul
+    e 401 la fiecare cerere — adică exact simptomul unei chei greșite, căutat în
+    locul greșit.
+    """
+    peer_repo = require_peer_repo(
+        "sincronizarea celor două exemplare de AUTH.md"
+    )
+
+    assert _read_auth_document(peer_repo) == _read_auth_document(SERVER_REPO_ROOT), (
+        f"Exemplarele de AUTH.md diferă între server și {peer_repo.name}. "
+        f"Copiază versiunea nouă în repo-ul rămas în urmă."
+    )
