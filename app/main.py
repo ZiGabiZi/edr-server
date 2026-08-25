@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.routes import agents, events, heartbeat
+from app.routes import agents, events, heartbeat, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -70,3 +70,4 @@ def health_check() -> dict:
 app.include_router(agents.router)
 app.include_router(events.router)
 app.include_router(heartbeat.router)
+app.include_router(metrics.router)
