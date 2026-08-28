@@ -46,6 +46,81 @@ class EventMeasurements(WireModel):
     hash_duration_ms: Optional[int] = None
 
 
+# Treptele protocolului de divulgare progresiva. Ordinea e semnificativa:
+# fiecare treapta divulga strict mai mult decat precedenta.
+#   T0 — amprenta si metadate; niciun octet de continut
+#   T1 — vector de trasaturi calculat local; tot niciun octet de continut
+#   T2 — regiuni selective din fisier
+#   T3 — fisierul integral
+#
+# Declarate toate acum, desi doar T0 exista: valorile viitoare intr-un
+# vocabular inchis nu costa nimic, iar un server care le refuza ar bloca
+# agentul exact in momentul in care treapta noua devine functionala.
+VALID_DISCLOSURE_TIERS = frozenset({"T0", "T1", "T2", "T3"})
+
+# La ce trepte continutul fisierului NU are voie sa fi plecat. Nu e o
+# conventie de raportare, e definitia treptelor: daca T0 ar putea purta
+# octeti de continut, distinctia dintre trepte s-ar dizolva, iar metrica de
+# divulgare ar masura o scara fara semnificatie.
+_CONTENTLESS_TIERS = frozenset({"T0", "T1"})
+
+
+class EventDisclosure(WireModel):
+    """
+    Ce a parasit endpoint-ul, ca proprietate semantica a divulgarii.
+
+    Separat de EventMeasurements din acelasi motiv pentru care acela a fost
+    separat de corpul evenimentului la v3: unul spune ce a COSTAT observarea
+    (settle_wait_ms, hash_duration_ms), celalalt spune ce A PLECAT. Granita e
+    impusa de forma, nu de conventie.
+
+    Nu poarta dimensiunea plicului. Un camp care ar numara octetii mesajului
+    in care se afla si-ar schimba propria valoare la inserare — problema e
+    circulara prin constructie, nu prin implementare. Contabilitatea plicului
+    traieste deci in anteturi, ca autentificarea: vezi contracts/METRICS.md §7.
+
+    tier e OBLIGATORIU in interiorul blocului, desi blocul insusi ramane
+    optional. Cele doua reguli nu se bat cap in cap, ci impart raspunderea:
+    absenta blocului e permisa tocmai ca un agent de dinainte de v5 sa nu
+    primeasca 422 si sa-si piarda evenimentul din spool, dar un bloc PREZENT
+    fara treapta ar readuce, cu un nivel mai jos, exact ambiguitatea pe care
+    bicondiționalitatea a fost introdusa s-o elimine: nu s-ar mai putea spune
+    daca evenimentul nu e pe scara, daca emitatorul e partial, sau daca
+    builder-ul a uitat campul. Un agent care nu emite nimic ramane acceptat;
+    doar unul care emite un bloc fara continut informational e respins.
+    """
+
+    tier: str
+    content_bytes: Optional[int] = None
+
+    @model_validator(mode="after")
+    def _validate_tier(self) -> "EventDisclosure":
+        if self.tier not in VALID_DISCLOSURE_TIERS:
+            raise ValueError(
+                f"tier invalid: {self.tier!r}. "
+                f"Valori acceptate: {sorted(VALID_DISCLOSURE_TIERS)}."
+            )
+
+        if self.content_bytes is not None and self.content_bytes < 0:
+            raise ValueError(
+                f"content_bytes nu poate fi negativ: {self.content_bytes}."
+            )
+
+        if (
+            self.tier in _CONTENTLESS_TIERS
+            and self.content_bytes is not None
+            and self.content_bytes > 0
+        ):
+            raise ValueError(
+                f"tier este {self.tier!r} dar content_bytes este "
+                f"{self.content_bytes}. Treptele T0 si T1 nu divulga continut "
+                f"prin definitie; un numar pozitiv aici inseamna ori un bug de "
+                f"atribuire, ori un canal necontabilizat."
+            )
+
+        return self
+
+
 class EventCreateRequest(WireModel):
     agent_id: str
     event_type: str
@@ -55,6 +130,7 @@ class EventCreateRequest(WireModel):
     hash_status: Optional[str] = None
     file_size: Optional[int] = None
     measurements: Optional[EventMeasurements] = None
+    disclosure: Optional[EventDisclosure] = None
     description: Optional[str] = None
     occurred_at: Optional[str] = None
     agent_instance_id: Optional[str] = None
@@ -75,6 +151,14 @@ class EventCreateRequest(WireModel):
         (test_event_contract.py::
         test_agent_builder_always_declares_hash_status_when_file_path_is_present),
         si va deveni validator aici cand agentul chiar calculeaza hash-uri.
+
+        Aceeasi rezerva se aplica bicondiționalitatii introduse la v5:
+        'disclosure prezent <=> file_path prezent'. Agentul curent inca nu
+        emite blocul, deci un validator aici ar sterge din spool exact
+        evenimentele pe care metrica de trepte exista sa le numere. Se
+        verifica prin test impotriva builder-ului agentului, si devine
+        validator cand agentul il emite — la fel cum s-a intamplat cu
+        hash_status intre v3 si v4.
         """
         if self.hash_status is not None and self.hash_status not in VALID_HASH_STATUSES:
             raise ValueError(
@@ -120,6 +204,7 @@ class EventResponse(BaseModel):
     hash_status: Optional[str] = None
     file_size: Optional[int] = None
     measurements: Optional[EventMeasurements] = None
+    disclosure: Optional[EventDisclosure] = None
     description: Optional[str] = None
     occurred_at: Optional[str] = None
     received_at: Optional[str] = None

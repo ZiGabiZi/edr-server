@@ -11,8 +11,10 @@ import sys
 import tempfile
 from pathlib import Path
 
+from typing import get_args
+
 import pytest
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from app.schemas.event import VALID_HASH_STATUSES, EventCreateRequest
 from app.tests.test_wire_contract import require_peer_repo
@@ -92,22 +94,81 @@ def test_the_contract_and_the_schema_agree_on_the_status_vocabulary():
     )
 
 
+# Singura cale de camp careia i se ingaduie un nume din vocabularul interzis.
+# content_bytes NU transporta continut, il NUMARA: e contorul metricii de
+# divulgare, iar scutirea e enumerata aici tocmai ca sa fie o exceptie de un
+# rand, vizibila la citire, nu o gaura in forma numelui.
+_CONTENT_NAME_ALLOWLIST = frozenset({"disclosure.content_bytes"})
+
+
+def _field_paths(model, prefix: str = "", seen: frozenset = frozenset()):
+    """
+    Toate caile de camp ale unui model, coborand si in modelele imbricate.
+
+    Garda pe nume nu are voie sa se opreasca la primul nivel: `measurements` si
+    `disclosure` sunt modele, iar un camp strecurat in ele ar fi la fel de mult
+    pe canalul de evenimente ca unul declarat sus.
+    """
+    if model in seen:
+        return
+
+    seen = seen | {model}
+
+    for name, field in model.model_fields.items():
+        path = f"{prefix}{name}"
+        yield path
+
+        # Optional[X] ajunge aici ca Union[X, None]: candidatii acopera si
+        # adnotarea directa, si argumentele ei.
+        for candidate in (field.annotation, *get_args(field.annotation)):
+            if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+                yield from _field_paths(candidate, f"{path}.", seen)
+
+
 def test_event_model_never_carries_file_content():
     """
     Pattern pe nume, nu lista fixa (decizia 3): acopera si campuri viitoare
     neanticipate, nu doar 'file_content'/'file_bytes' ghicite azi.
+
+    Coboara si in modelele imbricate. La v5, EventDisclosure a fost primul model
+    imbricat care poarta un nume din vocabularul interzis — daca garda ar fi
+    ramas la primul nivel, ea ar fi trecut pe verde in exact momentul in care
+    incepea sa conteze, iar un viitor bloc cu `file_content` in el ar fi
+    livrat nevazut.
     """
     forbidden_substrings = ("content", "bytes")
     offending = [
-        name
-        for name in EventCreateRequest.model_fields
-        if any(s in name.lower() for s in forbidden_substrings)
+        path
+        for path in _field_paths(EventCreateRequest)
+        if path not in _CONTENT_NAME_ALLOWLIST
+        and any(s in path.rsplit(".", 1)[-1].lower() for s in forbidden_substrings)
     ]
     assert not offending, (
         f"EventCreateRequest declara campuri care sugereaza continut de "
         f"fisier: {offending}. Canalul de evenimente nu are voie sa poarte "
         f"continut — vezi contracts/wire-contract.json, "
-        f"models.event_create_request.notes."
+        f"models.event_create_request.notes. Daca un nume nou chiar numara "
+        f"octeti in loc sa-i transporte, adauga-l explicit in "
+        f"_CONTENT_NAME_ALLOWLIST, cu motivul."
+    )
+
+
+def test_the_content_guard_actually_looks_inside_nested_models():
+    """
+    Garda pentru garda. Scutirea lui disclosure.content_bytes e utila doar daca
+    recursia chiar ajunge la el: fara recursie, lista de scutiri ar fi goala de
+    efect, iar testul de mai sus ar trece din motivul gresit.
+    """
+    paths = set(_field_paths(EventCreateRequest))
+
+    assert "disclosure.content_bytes" in paths, (
+        "Recursia nu mai coboara in modelele imbricate; garda pe forma numelui "
+        "a devenit o verificare de suprafata."
+    )
+    assert _CONTENT_NAME_ALLOWLIST <= paths, (
+        f"Scutiri care nu mai corespund niciunui camp: "
+        f"{sorted(_CONTENT_NAME_ALLOWLIST - paths)}. O scutire moarta ascunde "
+        f"un nume viitor identic."
     )
 
 

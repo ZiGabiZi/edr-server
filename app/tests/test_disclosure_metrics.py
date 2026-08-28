@@ -52,13 +52,48 @@ def _lifecycle_event(event_type: str = "agent_startup", agent_id: str = "agent-1
 # 1. Numitorul
 # ---------------------------------------------------------------------------
 
-def test_the_denominator_is_the_sum_of_hashed_file_sizes():
+def test_the_denominator_is_hashed_file_sizes_plus_the_same_envelope():
+    """
+    METRICS.md §2: un sistem always-upload nu trimite fișiere goale, ci
+    fișierul PLUS aceleași metadate de identificare. Numitorul e deci
+    `conținut + plic`, cu exact plicul evenimentelor care intră în el.
+
+    Corecția merge aparent în defavoarea protocolului și tocmai de aceea apără
+    afirmația: nimeni nu poate susține că numitorul a fost umflat.
+    """
     metrics = compute_disclosure_metrics(
         [_file_event("a.bin", 1000), _file_event("b.bin", 2500)]
     )
 
-    assert metrics["always_upload"]["bytes"] == 3500
+    assert metrics["always_upload"]["content_bytes"] == 3500
+    assert metrics["always_upload"]["envelope_bytes"] > 0
+    assert metrics["always_upload"]["bytes"] == (
+        metrics["always_upload"]["content_bytes"]
+        + metrics["always_upload"]["envelope_bytes"]
+    )
     assert metrics["always_upload"]["file_events_with_size"] == 2
+
+
+def test_the_envelope_in_the_denominator_is_the_one_of_the_counted_events():
+    """
+    Plicul numitorului nu e o constantă și nici totalul de metadate: e suma
+    plicurilor exact ale evenimentelor care au intrat în numitor. Fișierele
+    fără dimensiune și evenimentele de ciclu de viață costă metadate în
+    numărător, dar nu au corespondent în numitor — §2.1.
+    """
+    metrics = compute_disclosure_metrics(
+        [
+            _file_event("a.bin", 1000),
+            _file_event("fara-hash.bin", None, hash_status="unstable"),
+            _lifecycle_event(),
+        ]
+    )
+
+    assert metrics["always_upload"]["file_events_with_size"] == 1
+    assert (
+        metrics["always_upload"]["envelope_bytes"]
+        < metrics["progressive"]["metadata_bytes"]
+    )
 
 
 def test_lifecycle_events_are_not_files_and_stay_out_of_the_denominator():
@@ -102,7 +137,7 @@ def test_the_scope_can_be_narrowed_to_one_agent():
         agent_id="agent-1",
     )
 
-    assert metrics["always_upload"]["bytes"] == 1000
+    assert metrics["always_upload"]["content_bytes"] == 1000
     assert metrics["scope"] == "agent-1"
 
 
@@ -146,10 +181,15 @@ def test_the_ratio_is_sent_over_always_upload():
     metrics = compute_disclosure_metrics([_file_event("a.bin", 1_000_000)])
 
     sent = metrics["progressive"]["total_bytes"]
+    denominator = metrics["always_upload"]["bytes"]
+
+    # Numitorul e conținut + plic, deci strict mai mare decât fișierul singur.
+    assert denominator > 1_000_000
+    # round(..., 6) e al metricii, nu al testului: raportul se publică rotunjit.
     assert metrics["ratio"]["sent_over_always_upload"] == pytest.approx(
-        sent / 1_000_000, rel=1e-9
+        round(sent / denominator, 6), rel=1e-9
     )
-    assert metrics["ratio"]["bytes_saved"] == 1_000_000 - sent
+    assert metrics["ratio"]["bytes_saved"] == denominator - sent
 
 
 def test_an_empty_denominator_yields_no_ratio_rather_than_zero():
@@ -239,6 +279,7 @@ def test_the_route_reports_the_metric_for_the_stored_events(client, registered_a
 
     body = client.get("/api/metrics/disclosure").json()
 
-    assert body["always_upload"]["bytes"] == 4096
+    assert body["always_upload"]["content_bytes"] == 4096
+    assert body["always_upload"]["bytes"] > 4096
     assert body["progressive"]["content_bytes"] == 0
     assert body["ratio"]["sent_over_always_upload"] is not None

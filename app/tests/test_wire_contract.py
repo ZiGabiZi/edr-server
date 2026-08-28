@@ -27,7 +27,11 @@ from typing import Optional
 import pytest
 
 from app.schemas.agent import AgentRegisterRequest
-from app.schemas.event import EventCreateRequest, EventMeasurements
+from app.schemas.event import (
+    EventCreateRequest,
+    EventDisclosure,
+    EventMeasurements,
+)
 from app.schemas.heartbeat import HeartbeatDirective, HeartbeatRequest, HeartbeatResponse
 
 
@@ -41,6 +45,21 @@ CONTRACT_RELATIVE_PATH = Path("contracts") / "wire-contract.json"
 # scrise de mână în ambele părți, iar o divergență nu produce o eroare de import,
 # ci un 401 permanent care arată exact ca o cheie greșită.
 AUTH_DOC_RELATIVE_PATH = Path("contracts") / "AUTH.md"
+
+# Definițiile operaționale ale metricilor. Al treilea document partajat, și tot
+# un contract real, nu documentație: serverul calculează metrica, agentul
+# furnizează intrările, deci amândouă părțile trebuie să fie de acord ce se
+# numără. Un exemplar editat pe o singură parte nu produce niciun eșec la
+# rulare — produce două repo-uri care raportează cifre sub definiții diferite.
+METRICS_DOC_RELATIVE_PATH = Path("contracts") / "METRICS.md"
+
+# Toate documentele care trebuie să fie identice în cele două repo-uri. Lista e
+# aici, nu un test scris de mână pentru fiecare, ca al patrulea document să fie
+# apărat prin adăugarea unei linii, nu prin amintirea unei convenții.
+SHARED_DOCUMENTS = {
+    "AUTH.md": AUTH_DOC_RELATIVE_PATH,
+    "METRICS.md": METRICS_DOC_RELATIVE_PATH,
+}
 
 # Repo-ul pereche și variabila care îi suprascrie locația. Convenția implicită
 # este că cele două clone stau una lângă alta.
@@ -77,6 +96,7 @@ CONTRACT_MODELS = {
     "heartbeat_response": HeartbeatResponse,
     "heartbeat_directive": HeartbeatDirective,
     "event_measurements": EventMeasurements,
+    "event_disclosure": EventDisclosure,
 }
 
 
@@ -301,39 +321,51 @@ def test_the_peer_repository_carries_the_same_contract():
     assert peer_contract == CONTRACT, "Exemplarele diferă în afara secțiunii 'models'."
 
 
-def _read_auth_document(repo_root: Path) -> str:
+def _read_shared_document(repo_root: Path, relative_path: Path) -> str:
     """
-    Citește AUTH.md normalizând terminatoarele de linie.
+    Citește un document partajat normalizând terminatoarele de linie.
 
     Repo-urile sunt clonate și pe Windows, și prin WSL; o diferență CRLF/LF ar
-    produce un eșec fals care n-are nicio legătură cu numele antetelor.
+    produce un eșec fals care n-are nicio legătură cu conținutul documentului.
+
+    Numele fișierului se compară exact așa cum e scris aici, iar pe Linux
+    potrivirea e sensibilă la majuscule: un exemplar salvat ca METRICS.MD nu e
+    același fișier, iar referințele din cod către contracts/METRICS.md n-ar mai
+    duce nicăieri pe serverul de test.
     """
-    document = repo_root / AUTH_DOC_RELATIVE_PATH
+    document = repo_root / relative_path
 
     if not document.is_file():
         raise FileNotFoundError(
-            f"Documentul de autentificare lipsește: {document}. Fără el, numele "
-            f"antetelor rămân o convenție ținută minte de un om."
+            f"Document partajat lipsă: {document}. Fără el, regulile pe care le "
+            f"fixează rămân o convenție ținută minte de un om."
         )
 
     return document.read_text(encoding="utf-8-sig").replace("\r\n", "\n")
 
 
-def test_the_peer_repository_carries_the_same_auth_document():
+@pytest.mark.parametrize("document_name", sorted(SHARED_DOCUMENTS))
+def test_the_peer_repository_carries_the_same_shared_document(document_name: str):
     """
-    Cele două exemplare de AUTH.md trebuie să spună același lucru.
+    Cele două exemplare ale fiecărui document partajat trebuie să spună același
+    lucru.
 
     Un exemplar actualizat pe o singură parte e mai periculos aici decât la
-    contractul de fir: acolo divergența pică un test de schemă, aici produce un
-    agent care trimite `X-Agent-Key` unui server care așteaptă altceva. Rezultatul
-    e 401 la fiecare cerere — adică exact simptomul unei chei greșite, căutat în
-    locul greșit.
+    contractul de fir: acolo divergența pică un test de schemă. La AUTH.md
+    produce un agent care trimite `X-Agent-Key` unui server care așteaptă
+    altceva — 401 la fiecare cerere, adică exact simptomul unei chei greșite,
+    căutat în locul greșit. La METRICS.md nu produce nicio eroare: produce două
+    repo-uri care numără altfel aceeași cifră, ceea ce se descoperă abia când
+    rezultatele nu se mai reproduc.
     """
+    relative_path = SHARED_DOCUMENTS[document_name]
     peer_repo = require_peer_repo(
-        "sincronizarea celor două exemplare de AUTH.md"
+        f"sincronizarea celor două exemplare de {document_name}"
     )
 
-    assert _read_auth_document(peer_repo) == _read_auth_document(SERVER_REPO_ROOT), (
-        f"Exemplarele de AUTH.md diferă între server și {peer_repo.name}. "
-        f"Copiază versiunea nouă în repo-ul rămas în urmă."
+    assert _read_shared_document(peer_repo, relative_path) == _read_shared_document(
+        SERVER_REPO_ROOT, relative_path
+    ), (
+        f"Exemplarele de {document_name} diferă între server și "
+        f"{peer_repo.name}. Copiază versiunea nouă în repo-ul rămas în urmă."
     )

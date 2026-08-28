@@ -29,6 +29,7 @@ def create_event(event: EventCreateRequest) -> dict:
         "hash_status": event.hash_status,
         "file_size": event.file_size,
         "measurements": event.measurements.model_dump() if event.measurements else None,
+        "disclosure": event.disclosure.model_dump() if event.disclosure else None,
         "description": event.description,
         "occurred_at": event.occurred_at,
         "received_at": utc_now(),
