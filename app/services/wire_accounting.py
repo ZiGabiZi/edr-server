@@ -37,7 +37,7 @@ De ce nimic nu se pierde:
 
 from dataclasses import dataclass, field, replace
 from threading import Lock
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Mapping, Optional, Tuple
 
 
 # Motivele pentru care octeții primiți nu pot fi puși pe seama unei încarnări.
@@ -54,6 +54,35 @@ UNATTRIBUTABLE_REASONS = (
     UNATTRIBUTABLE_NO_INSTANCE,
     UNATTRIBUTABLE_UNSIZED,
 )
+
+
+# Canalele, cu aceleași nume ca în edr-agent/services/wire_ledger.py.
+#
+# De ce măsurăm pe canale, când reconcilierea compară totaluri:
+#     Reconcilierea are nevoie de un singur număr, pentru că anteturile
+#     agentului poartă totalul peste canale. Dar numărătorul afirmației
+#     centrale NU e totalul: METRICS.md §1.4 cere ca heartbeat-urile să fie
+#     raportate ca prag separat, nu topite în divulgare. Un numărător măsurat
+#     care le-ar include ar fi măsurat și greșit — mai rău decât o estimare
+#     onestă, pentru că poartă autoritatea unei măsurători.
+#
+# `other` există pentru că serverul deduce canalul din CALE, nu din declarația
+# agentului. O rută nouă adăugată mâine, sau un POST către o cale inexistentă,
+# n-are voie să aterizeze tăcut peste evenimente — adică exact peste cifra
+# afirmației principale. Aceeași regulă ca la găleata de neatribuibil: dacă nu
+# știm unde se pun, se pun undeva unde se văd.
+CHANNEL_EVENTS = "events"
+CHANNEL_CONTROL = "control"
+CHANNEL_ENROLLMENT = "enrollment"
+CHANNEL_OTHER = "other"
+
+CHANNELS = (CHANNEL_EVENTS, CHANNEL_CONTROL, CHANNEL_ENROLLMENT, CHANNEL_OTHER)
+
+
+@dataclass(frozen=True)
+class ChannelTotals:
+    bytes: int = 0
+    messages: int = 0
 
 
 @dataclass(frozen=True)
@@ -78,6 +107,9 @@ class IncarnationAccount:
     reported_delivered_bytes: Optional[int] = None
     received_bytes_at_last_report: Optional[int] = None
     malformed_reports: int = 0
+    # Defalcarea pe canale a lui received_bytes. Totalul rămâne separat pentru
+    # că el e cel comparabil cu anteturile agentului, care nu despart canalele.
+    by_channel: Mapping[str, ChannelTotals] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -127,6 +159,7 @@ def record_attributed(
     agent_id: str,
     agent_instance_id: str,
     byte_count: int,
+    channel: str = CHANNEL_OTHER,
     reported_attempted: Optional[int] = None,
     reported_delivered: Optional[int] = None,
     report_present: bool = False,
@@ -169,10 +202,23 @@ def record_attributed(
                 account, malformed_reports=account.malformed_reports + 1
             )
 
+        if channel not in CHANNELS:
+            raise ValueError(
+                f"Canal necunoscut: {channel!r}. Canalele valide sunt {CHANNELS}."
+            )
+
+        by_channel = dict(account.by_channel)
+        current_channel = by_channel.get(channel, ChannelTotals())
+        by_channel[channel] = ChannelTotals(
+            bytes=current_channel.bytes + byte_count,
+            messages=current_channel.messages + 1,
+        )
+
         _store.incarnations[key] = replace(
             account,
             received_bytes=account.received_bytes + byte_count,
             received_messages=account.received_messages + 1,
+            by_channel=by_channel,
         )
 
 
@@ -346,6 +392,10 @@ def reconciliation(agent_id: Optional[str] = None) -> Dict[str, Any]:
                 "reported_attempted_bytes": account.reported_attempted_bytes,
                 "reported_delivered_bytes": account.reported_delivered_bytes,
                 "malformed_reports": account.malformed_reports,
+                "received_bytes_by_channel": {
+                    channel: account.by_channel.get(channel, ChannelTotals()).bytes
+                    for channel in CHANNELS
+                },
                 **comparison,
             }
         )
@@ -367,6 +417,41 @@ def reconciliation(agent_id: Optional[str] = None) -> Dict[str, Any]:
             },
         },
     }
+
+
+def measured_by_channel(agent_id: Optional[str] = None) -> Dict[str, Dict[str, int]]:
+    """
+    Octeții măsurați, adunați pe canale peste toate încarnările.
+
+    E cifra pe care o cere METRICS.md §7: numărătorul afirmației centrale,
+    **măsurat** — dar numai canalul de evenimente. Controlul se raportează
+    alături, ca prag (§1.4), iar înrolarea separat, pentru că e proporțională cu
+    numărul de reporniri, nu cu fișierele.
+
+    Adună peste încarnări, nu peste agenți: un agent care a repornit de zece ori
+    a divulgat suma celor zece încarnări, iar cifra pe care o publicăm e cât a
+    părăsit endpoint-ul, nu cât a părăsit ultima lui pornire.
+
+    Ce NU intră aici: octeții din găleata de neatribuibil. Ei au fost primiți,
+    dar nu se pot pune pe seama unui canal — serverul deduce canalul din cale, și
+    o cerere neatribuită unei încarnări nu are cui să fie adăugată fără să strice
+    o cheie. Se raportează separat, la §7.4, ca să nu dispară.
+    """
+    with _lock:
+        incarnations = dict(_store.incarnations)
+
+    totals = {channel: {"bytes": 0, "messages": 0} for channel in CHANNELS}
+
+    for (row_agent_id, _instance), account in incarnations.items():
+        if agent_id is not None and row_agent_id != agent_id:
+            continue
+
+        for channel in CHANNELS:
+            channel_totals = account.by_channel.get(channel, ChannelTotals())
+            totals[channel]["bytes"] += channel_totals.bytes
+            totals[channel]["messages"] += channel_totals.messages
+
+    return totals
 
 
 def account_for(agent_id: str, agent_instance_id: str) -> Optional[IncarnationAccount]:

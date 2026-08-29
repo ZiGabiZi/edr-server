@@ -30,6 +30,7 @@ from app.wire_middleware import (
     WIRE_DELIVERED_HEADER,
     WIRE_INSTANCE_HEADER,
     account_for_request,
+    channel_for_path,
 )
 
 
@@ -404,6 +405,133 @@ class TestSizeless:
         assert all(
             counters["messages"] == 0 for counters in snapshot["unattributable"].values()
         )
+
+
+class TestChannels:
+    """
+    Serverul desparte canalele DUPĂ CALE, cu aceleași nume ca registrul agentului.
+
+    De ce contează: METRICS.md §1.4 cere ca heartbeat-urile să fie raportate ca
+    prag separat, nu topite în divulgare. Un numărător măsurat care le-ar
+    include ar fi măsurat și greșit — mai rău decât o estimare onestă, pentru că
+    poartă autoritatea unei măsurători.
+    """
+
+    def test_events_are_measured_on_the_events_channel(
+        self, client, registered_agent_id
+    ):
+        body = _event_body(registered_agent_id)
+        key = client.issued_keys[registered_agent_id]
+
+        client.post("/api/events", content=body, headers=_headers(key))
+
+        by_channel = wire_accounting.measured_by_channel()
+        assert by_channel[wire_accounting.CHANNEL_EVENTS]["bytes"] == len(body)
+        assert by_channel[wire_accounting.CHANNEL_CONTROL]["bytes"] == 0
+
+    def test_heartbeats_are_measured_on_the_control_channel(
+        self, client, registered_agent_id
+    ):
+        body = json.dumps(
+            {"agent_instance_id": INSTANCE_ID, "sequence": 1}
+        ).encode("utf-8")
+        key = client.issued_keys[registered_agent_id]
+
+        client.post(
+            f"/api/agents/{registered_agent_id}/heartbeat",
+            content=body,
+            headers=_headers(key),
+        )
+
+        by_channel = wire_accounting.measured_by_channel()
+        assert by_channel[wire_accounting.CHANNEL_CONTROL]["bytes"] == len(body)
+        assert by_channel[wire_accounting.CHANNEL_EVENTS]["bytes"] == 0
+
+    def test_registration_is_measured_on_the_enrollment_channel(
+        self, client, registered_agent_id
+    ):
+        key = client.issued_keys[registered_agent_id]
+
+        client.post(
+            "/api/agents/register",
+            json={
+                "agent_id": registered_agent_id,
+                "hostname": "HOST1",
+                "operating_system": "windows",
+                "architecture": "x64",
+                "os_architecture": "x64",
+                "machine_id_type": "hash",
+                "machine_id_hash": f"hash-{registered_agent_id}",
+            },
+            headers={
+                WIRE_INSTANCE_HEADER: INSTANCE_ID,
+                auth_service.AGENT_KEY_HEADER: key,
+            },
+        )
+
+        by_channel = wire_accounting.measured_by_channel()
+        assert by_channel[wire_accounting.CHANNEL_ENROLLMENT]["bytes"] > 0
+        assert by_channel[wire_accounting.CHANNEL_EVENTS]["bytes"] == 0
+
+    def test_totals_are_summed_across_incarnations(self, client, registered_agent_id):
+        key = client.issued_keys[registered_agent_id]
+        first = _event_body(registered_agent_id, "ev-1")
+        second = _event_body(registered_agent_id, "ev-2")
+
+        client.post("/api/events", content=first, headers=_headers(key))
+        client.post(
+            "/api/events",
+            content=second,
+            headers=_headers(key, instance_id="alta-incarnare"),
+        )
+
+        # Un agent care a repornit a divulgat suma incarnarilor lui: cifra
+        # publicata e cat a parasit endpoint-ul, nu cat a parasit ultima pornire.
+        events = wire_accounting.measured_by_channel()[wire_accounting.CHANNEL_EVENTS]
+        assert events["bytes"] == len(first) + len(second)
+        assert events["messages"] == 2
+
+    def test_the_aggregate_can_be_filtered_by_agent(self, client, registered_agent_id):
+        key = client.issued_keys[registered_agent_id]
+
+        client.post(
+            "/api/events", content=_event_body(registered_agent_id), headers=_headers(key)
+        )
+
+        mine = wire_accounting.measured_by_channel(agent_id=registered_agent_id)
+        other = wire_accounting.measured_by_channel(agent_id="alt-agent")
+        assert mine[wire_accounting.CHANNEL_EVENTS]["bytes"] > 0
+        assert other[wire_accounting.CHANNEL_EVENTS]["bytes"] == 0
+
+
+class TestChannelForPath:
+    @pytest.mark.parametrize(
+        "path,expected",
+        [
+            ("/api/events", wire_accounting.CHANNEL_EVENTS),
+            ("/api/events/", wire_accounting.CHANNEL_EVENTS),
+            ("/api/agents/register", wire_accounting.CHANNEL_ENROLLMENT),
+            ("/api/agents/agent-1/heartbeat", wire_accounting.CHANNEL_CONTROL),
+            ("/api/agents/agent%2F1/heartbeat", wire_accounting.CHANNEL_CONTROL),
+        ],
+    )
+    def test_known_paths_map_to_their_channel(self, path, expected):
+        assert channel_for_path(path) == expected
+
+    @pytest.mark.parametrize(
+        "path",
+        ["/api/agents", "/api/agents/agent-1", "/api/rute/noua", "/", "/api/events/2"],
+    )
+    def test_anything_else_lands_in_other_not_in_events(self, path):
+        # O ruta noua adaugata maine n-are voie sa creasca tacut numaratorul
+        # afirmatiei centrale.
+        assert channel_for_path(path) == wire_accounting.CHANNEL_OTHER
+
+    def test_an_unknown_channel_raises_instead_of_being_counted(self):
+        with pytest.raises(ValueError):
+            wire_accounting.record_attributed(
+                agent_id="a", agent_instance_id="i", byte_count=10, channel="inventat"
+            )
 
 
 class TestParsing:

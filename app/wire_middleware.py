@@ -42,6 +42,7 @@ De ce nu citim corpul
 """
 
 import logging
+import re
 from typing import Callable
 
 from fastapi import FastAPI, Request, Response
@@ -63,6 +64,39 @@ _METHODS_WITH_BODY = frozenset({"POST", "PUT", "PATCH"})
 WIRE_ATTEMPTED_HEADER = "X-Agent-Wire-Attempted-Bytes"
 WIRE_DELIVERED_HEADER = "X-Agent-Wire-Delivered-Bytes"
 WIRE_INSTANCE_HEADER = "X-Agent-Instance-Id"
+
+# Calea cere heartbeat-ului agentul din URL, nu din corp — la fel ca ruta.
+_HEARTBEAT_PATH = re.compile(r"^/api/agents/[^/]+/heartbeat/?$")
+_EVENTS_PATH = "/api/events"
+_REGISTER_PATH = "/api/agents/register"
+
+
+def channel_for_path(path: str) -> str:
+    """
+    Traduce calea cererii în canalul pe care agentul a numărat-o.
+
+    Serverul deduce canalul din CALE, nu din vreo declarație a agentului. Ar fi
+    fost mai simplu cu un antet de canal, dar atunci clasificarea ar fi venit de
+    la partea măsurată — un agent stricat, sau unul ostil, și-ar putea muta
+    octeții din divulgare în control, adică taman din cifra afirmației
+    principale în pragul care nu contează. Calea e fapt observat de server.
+
+    Numele trebuie să corespundă celor din edr-agent/services/wire_ledger.py,
+    altfel cele două jumătăți ale reconcilierii ar despărți canalele diferit.
+
+    Orice altceva intră la `other`, nu la evenimente: o rută nouă adăugată mâine
+    n-are voie să crească tăcut numărătorul afirmației centrale.
+    """
+    if path.rstrip("/") == _EVENTS_PATH:
+        return wire_accounting.CHANNEL_EVENTS
+
+    if path.rstrip("/") == _REGISTER_PATH:
+        return wire_accounting.CHANNEL_ENROLLMENT
+
+    if _HEARTBEAT_PATH.match(path):
+        return wire_accounting.CHANNEL_CONTROL
+
+    return wire_accounting.CHANNEL_OTHER
 
 
 def _content_length(request: Request) -> int | None:
@@ -142,6 +176,7 @@ def account_for_request(request: Request) -> None:
         agent_id=agent_id,
         agent_instance_id=instance_id,
         byte_count=byte_count,
+        channel=channel_for_path(request.url.path),
         reported_attempted=wire_accounting.parse_reported_bytes(raw_attempted),
         reported_delivered=wire_accounting.parse_reported_bytes(raw_delivered),
         report_present=raw_attempted is not None or raw_delivered is not None,
