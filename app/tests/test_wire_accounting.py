@@ -190,11 +190,39 @@ class TestNothingDisappears:
         assert _unattributable(wire_accounting.UNATTRIBUTABLE_NO_KEY)["bytes"] > 0
         assert _unattributable(wire_accounting.UNATTRIBUTABLE_UNKNOWN_KEY)["messages"] == 0
 
-    def test_a_reregistration_lands_in_no_instance(self, client, registered_agent_id):
-        # A doua fata a aceleiasi gauri: aici agentul ARE cheie, deci e
-        # cunoscut, dar payload-ul de inregistrare tot nu poarta
-        # agent_instance_id, deci antetul lipseste (edr-agent#19). Octetii nu se
-        # pierd; doar nu se pot pune pe seama unei incarnari.
+    def test_a_reregistration_that_declares_its_incarnation_is_attributed(
+        self, client, registered_agent_id
+    ):
+        # Contractul interzice agent_instance_id in CORPUL inregistrarii, dar
+        # agentul il trimite pe antet (edr-agent#19). Antetul nu trece prin
+        # schema, deci baseline-ul de repornire ramane neatins, iar octetii de
+        # reinregistrare devin atribuibili.
+        response = client.post(
+            "/api/agents/register",
+            json={
+                "agent_id": registered_agent_id,
+                "hostname": "HOST1",
+                "operating_system": "windows",
+                "architecture": "x64",
+                "os_architecture": "x64",
+                "machine_id_type": "hash",
+                "machine_id_hash": f"hash-{registered_agent_id}",
+            },
+            headers={WIRE_INSTANCE_HEADER: INSTANCE_ID},
+        )
+
+        assert response.status_code == 200, response.text
+        assert _unattributable(wire_accounting.UNATTRIBUTABLE_NO_INSTANCE)["messages"] == 0
+        assert (
+            wire_accounting.account_for(registered_agent_id, INSTANCE_ID).received_bytes
+            > 0
+        )
+
+    def test_a_request_that_does_not_declare_an_incarnation_lands_in_no_instance(
+        self, client, registered_agent_id
+    ):
+        # Regula generala ramane: agent cunoscut, incarnare nedeclarata. Azi o
+        # produce un agent mai vechi decat antetul, nu inregistrarea.
         response = client.post(
             "/api/agents/register",
             json={

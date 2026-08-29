@@ -152,21 +152,28 @@ class TestTheThreeStates:
         assert row["delivered_over_received"] is None
 
 
-class TestTheKnownHole:
-    def test_the_enrollment_hole_shows_up_as_a_broken_lower_bound(
+class TestTheFirstEnrollmentResidue:
+    def test_unattributed_enrollment_bytes_break_the_lower_bound(
         self, client, registered_agent_id
     ):
         """
-        edr-agent#19, vazut prin metrica.
+        Reziduul de la prima inrolare, vazut prin metrica.
 
         Agentul contorizeaza inrolarea pe canalul `enrollment`, iar anteturile
-        poarta totalul peste canale. Serverul pune octetii aceia in galeata
-        `no_instance`, care nu e tinuta pe incarnare. Deci prima cerere cu
-        incarnare declarata raporteaza octeti livrati pe care contul incarnarii
-        nu i-a vazut niciodata.
+        poarta totalul peste canale. La PRIMA inrolare a unei masini nu exista
+        inca o cheie de agent — autentificarea se face cu secretul de inrolare,
+        iar agent_id traieste doar in corp, pe care middleware-ul nu-l citeste.
+        Octetii aceia raman in galeata `no_key`, deci prima cerere cu incarnare
+        declarata raporteaza octeti livrati pe care contul incarnarii nu i-a
+        vazut niciodata.
 
-        Nu e slack tolerabil: e marginea de jos rupta, din prima cerere a
-        fiecarei incarnari, permanent.
+        Pana la edr-agent#19 acelasi gol aparea la FIECARE incarnare, pentru ca
+        inregistrarea nu purta deloc incarnarea. Acum e o singura data in viata
+        unei masini — sub conditia „peste o dimensiune tipica de mesaj" din
+        par. 7.3, deci nu cere prag largit.
+
+        Testul ramane pentru mecanism: asa arata o margine de jos rupta, si
+        metrica trebuie s-o vada.
         """
         enrollment_bytes = 300
         key = client.issued_keys[registered_agent_id]
