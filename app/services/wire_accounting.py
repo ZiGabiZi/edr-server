@@ -243,6 +243,132 @@ def snapshot() -> Dict[str, Any]:
     }
 
 
+# Verdictele reconcilierii, câte unul pentru fiecare stare a încadrării din
+# METRICS.md §7.2. Sunt patru, nu două, pentru că „nu s-a comparat" nu e același
+# lucru cu „s-a comparat și e bine": un agent care nu raportează încă e o stare
+# de tranziție, unul care raportează greșit e o problemă.
+VERDICT_WITHIN = "within_bounds"
+VERDICT_BELOW = "below_lower_bound"
+VERDICT_ABOVE = "above_upper_bound"
+VERDICT_UNREPORTED = "unreported"
+
+VERDICTS = (VERDICT_WITHIN, VERDICT_BELOW, VERDICT_ABOVE, VERDICT_UNREPORTED)
+
+
+def _reconcile(account: IncarnationAccount) -> Dict[str, Any]:
+    """
+    Compară un raport cu măsurătoarea care îi corespunde.
+
+    Încadrarea din §7.2, cu numele scrise ca aritmetica lor:
+
+        delivered_over_received   = raportat livrat − măsurat
+        received_over_attempted   = măsurat − raportat plecat
+
+    Pozitiv înseamnă margine ruptă, negativ înseamnă joc rămas. Direcțiile NU se
+    contopesc într-o diferență absolută, pentru că descriu lucruri diferite:
+
+        - `below_lower_bound` — serverul a primit mai puțin decât știe agentul că
+          i-a fost livrat. Contabilitate stricată de o parte sau de alta.
+        - `above_upper_bound` — serverul a primit mai mult decât a trimis
+          agentul. Ori cineva trimite în numele lui, ori există un canal
+          necontabilizat. Prima e o problemă de securitate, a doua invalidează
+          numărătorul afirmației centrale. E direcția care trebuie tratată mult
+          mai sever.
+
+    Măsurătoarea comparată e cea de la momentul raportului, nu totalul de acum:
+    anteturile poartă cifrele de dinaintea cererii care le-a adus.
+    """
+    measured = account.received_bytes_at_last_report
+    attempted = account.reported_attempted_bytes
+    delivered = account.reported_delivered_bytes
+
+    if measured is None or attempted is None or delivered is None:
+        return {
+            "verdict": VERDICT_UNREPORTED,
+            "compared_against_received_bytes": measured,
+            "delivered_over_received": None,
+            "received_over_attempted": None,
+            "reported_undelivered_bytes": None,
+        }
+
+    delivered_over_received = delivered - measured
+    received_over_attempted = measured - attempted
+
+    if received_over_attempted > 0:
+        verdict = VERDICT_ABOVE
+    elif delivered_over_received > 0:
+        verdict = VERDICT_BELOW
+    else:
+        verdict = VERDICT_WITHIN
+
+    return {
+        "verdict": verdict,
+        "compared_against_received_bytes": measured,
+        "delivered_over_received": delivered_over_received,
+        "received_over_attempted": received_over_attempted,
+        # Ce a plecat de pe endpoint fără să primească vreun răspuns, după
+        # propriile contoare ale agentului. Nu e o discrepanță: e volumul plecat
+        # în gol, iar el explică o parte din jocul dintre cele două margini.
+        "reported_undelivered_bytes": attempted - delivered,
+    }
+
+
+def reconciliation(agent_id: Optional[str] = None) -> Dict[str, Any]:
+    """
+    Raportul de reconciliere: ce a măsurat serverul, față de ce declară agenții.
+
+    Găleata de neatribuibil apare ÎNTOTDEAUNA întreagă, chiar și când raportul e
+    filtrat pe un agent. Nu e o scăpare: octeții de acolo n-au proprietar prin
+    definiție — dacă i-am putea filtra pe agent, n-ar mai fi neatribuibili. Un
+    raport filtrat care i-ar ascunde ar sugera că pentru agentul acela nu există
+    trafic necontabilizat, ceea ce nu se poate ști.
+    """
+    with _lock:
+        incarnations = dict(_store.incarnations)
+        unattributable = dict(_store.unattributable)
+
+    rows = []
+    verdict_counts = {verdict: 0 for verdict in VERDICTS}
+
+    for (row_agent_id, instance_id), account in sorted(incarnations.items()):
+        if agent_id is not None and row_agent_id != agent_id:
+            continue
+
+        comparison = _reconcile(account)
+        verdict_counts[comparison["verdict"]] += 1
+
+        rows.append(
+            {
+                "agent_id": row_agent_id,
+                "agent_instance_id": instance_id,
+                "received_bytes": account.received_bytes,
+                "received_messages": account.received_messages,
+                "reported_attempted_bytes": account.reported_attempted_bytes,
+                "reported_delivered_bytes": account.reported_delivered_bytes,
+                "malformed_reports": account.malformed_reports,
+                **comparison,
+            }
+        )
+
+    return {
+        "scope": agent_id or "all_agents",
+        "incarnations": rows,
+        "verdicts": verdict_counts,
+        "unattributable": {
+            "scope": "all_agents",
+            "reasons": {
+                reason: {
+                    "messages": unattributable.get(
+                        reason, UnattributableCounters()
+                    ).messages,
+                    "bytes": unattributable.get(reason, UnattributableCounters()).bytes,
+                }
+                for reason in UNATTRIBUTABLE_REASONS
+            },
+        },
+    }
+
+
 def account_for(agent_id: str, agent_instance_id: str) -> Optional[IncarnationAccount]:
     """Contul unei încarnări, sau None dacă n-a trimis niciodată nimic."""
     with _lock:
