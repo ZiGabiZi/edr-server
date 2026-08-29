@@ -5,6 +5,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app.routes import agents, events, heartbeat, metrics
+from app.wire_middleware import install_wire_accounting
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +66,12 @@ def health_check() -> dict:
         "service": "EDR Server",
         "version": "0.1.0",
     }
+
+
+# Contabilizarea octetilor primiti, inainte de rutare: o cerere respinsa cu 401
+# nu ajunge la nicio ruta, dar octetii ei au parasit endpoint-ul si au ajuns
+# aici. Vezi app/wire_middleware.py pentru de ce nu se numara in rute.
+install_wire_accounting(app)
 
 
 app.include_router(agents.router)
