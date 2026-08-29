@@ -31,7 +31,35 @@ def disclosure_metrics(agent_id: Optional[str] = Query(default=None)) -> dict:
         Când analistul primește un secret propriu, ruta asta se închide odată cu
         celelalte două, în aceeași schimbare.
     """
-    metrics = compute_disclosure_metrics(get_all_events(), agent_id=agent_id)
+    # Măsurătoarea pe canale, luată ÎNAINTE de calcul: numărătorul afirmației
+    # centrale e canalul de evenimente și doar el. Controlul e prag separat
+    # (METRICS.md §1.4), înrolarea e proporțională cu repornirile, iar `other`
+    # e plasa pentru rute care n-au fost clasificate — niciunul n-are ce căuta
+    # în cifra publicată ca divulgare.
+    measured = wire_accounting.measured_by_channel(agent_id=agent_id)
+    measured_events = measured[wire_accounting.CHANNEL_EVENTS]
+
+    metrics = compute_disclosure_metrics(
+        get_all_events(),
+        agent_id=agent_id,
+        measured_channel_bytes=measured_events["bytes"],
+        measured_channel_messages=measured_events["messages"],
+    )
+
+    # Canalele întregi, alături de numărător. Podeaua din §1.4 nu se mai
+    # estimează pe hârtie: e aici, măsurată, lângă cifra pe care o mărginește.
+    metrics["measured"] = {
+        "scope": agent_id or "toti agentii",
+        "by_channel": measured,
+        "note": (
+            "Octetii de corp masurati de server, despartiti dupa calea cererii. "
+            "Numai canalul events intra in numaratorul divulgarii; control e "
+            "pragul din §1.4, enrollment creste cu repornirile, iar other "
+            "aduna rutele neclasificate, ca o ruta noua sa nu creasca tacut "
+            "cifra afirmatiei principale. Octetii neatribuibili nu sunt aici: "
+            "vezi reconciliation.unattributable."
+        ),
+    }
 
     # Reconcilierea se compune AICI, nu înăuntrul lui compute_disclosure_metrics.
     #

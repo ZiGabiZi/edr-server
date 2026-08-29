@@ -462,18 +462,29 @@ agentul acela nu există trafic necontabilizat, ceea ce nu se poate ști.
 - `1.3b` — *parțial.* Livrat: serializarea explicită în transportul agentului,
   registrul de fir pe canale (`services/wire_ledger.py`), anteturile de la §7.1,
   contabilizarea pe server în middleware (`app/wire_middleware.py`,
-  `app/services/wire_accounting.py`) și reconcilierea de la §7.4.
+  `app/services/wire_accounting.py`), reconcilierea de la §7.4 și **numărătorul
+  măsurat** cu factorul de calibrare de la §7.6.
 
-  Rămân deschise **două** lucruri, iar primul e cel care poartă titlul acestei
-  secțiuni:
+  `progressive.total_bytes` vine acum din octeții numărați de server pe canalul
+  de evenimente, iar `progressive.numerator_source` spune, în același obiect,
+  dacă cifra e `measured` sau `estimated`. Nimeni nu mai poate publica una
+  crezând că e cealaltă.
 
-  1. **Numărătorul publicat e încă estimatul.** Cifra măsurată există, dar stă
-     alături, în `reconciliation`. Secțiunile `progressive`, `always_upload` și
-     `ratio` vin în continuare din `disclosure_metrics.py::_payload_bytes`, iar
-     factorul de calibrare din §7.6 — totalul măsurat față de suma estimărilor —
-     nu se calculează nicăieri. Până atunci, cerința „măsurat, nu estimat" e
-     pregătită, nu îndeplinită.
-  2. **Alarma** la discrepanță persistentă.
+  **Zero măsurat nu e o măsurătoare.** Contabilizarea trăiește în memoria
+  procesului; un agent care nu-și declară încarnarea, sau un server repornit,
+  lasă zero octeți măsurați lângă evenimente reale. Zero publicat ca numărător
+  ar însemna „endpoint-ul acesta n-a divulgat nimic" — cea mai flatantă
+  minciună posibilă despre un sistem de confidențialitate. Se tratează deci ca
+  absență de măsurătoare, iar cifra revine la estimare, declarată ca atare.
+
+  **Conținutul nu se adună peste cifra măsurată.** Estimatul e `plic + conținut`
+  pentru că plicul reserializează evenimentul stocat, iar conținutul e declarat
+  separat. Măsurătoarea e corpul întreg al cererii: când T2/T3 vor trimite
+  conținut, el va călători *în* corp, deci e deja înăuntru. `content_bytes`
+  rămâne raportat, dar ca **defalcare** a numărătorului măsurat, nu ca termen al
+  lui.
+
+  Rămâne deschisă **alarma** la discrepanță persistentă.
 
 **Reziduul cunoscut.** Prima înrolare a unei mașini rămâne neatribuibilă, din
 motivul explicat la §7.1: nu există încă o cheie care să dovedească identitatea,
@@ -513,6 +524,23 @@ Rezultatul util e că totalul măsurat, comparat cu suma estimărilor, dă eroar
 estimatorului. Cu factorul acela, cifrele per fișier se pot mărgini onest:
 „mediana e X, cu un estimator care subestimează cu Y% în agregat". Registrul nu
 înlocuiește estimatorul — îl **calibrează**.
+
+Factorul se publică în secțiunea `calibration`, ca `measured_bytes /
+estimated_bytes`. Fără măsurătoare e `null`, nu `1.0`: un factor de unu ar
+spune că estimatorul e exact, ceea ce e o afirmație, nu o absență.
+
+**Factorul nu e curat, și confundătorul se raportează lângă el.** Măsurătoarea
+numără fiecare plecare — §1.3, coada e at-least-once — și numără și cererile
+respinse; estimatorul reserializează evenimentele *stocate*, adică o dată
+fiecare. Deci factorul amestecă două lucruri: cât greșește reserializarea și de
+câte ori a plecat același eveniment.
+
+`calibration.messages_per_metered_event` desparte cele două. Cât timp e ~1,
+factorul descrie estimatorul și poate mărgini cifrele per fișier. Când crește,
+o parte din el descrie retransmisiile, iar o cifră „calibrată" cu el ar
+transfera costul retransmisiilor asupra fiecărui fișier — inclusiv asupra celor
+care au plecat o singură dată. Cine publică o cifră calibrată trebuie să vadă
+amândouă numerele, de aceea stau în același obiect.
 
 ---
 

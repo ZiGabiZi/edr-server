@@ -107,6 +107,8 @@ def _payload_bytes(event: Dict[str, Any]) -> int:
 def compute_disclosure_metrics(
     events: Iterable[Dict[str, Any]],
     agent_id: Optional[str] = None,
+    measured_channel_bytes: Optional[int] = None,
+    measured_channel_messages: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
     Calculează metrica peste evenimentele date, opțional pentru un singur agent.
@@ -128,6 +130,10 @@ def compute_disclosure_metrics(
     # ciclu de viață nu sunt pe scară și nu au ce căuta acolo. Cele de fișier
     # fără treaptă sunt însă un gol declarat, nu o absență normală: ele au
     # divulgat metadate pe care tabelul nu le poate atribui.
+    # Câte evenimente au contribuit la metadata_bytes. NU e len(file_events):
+    # estimatorul numără și evenimentele de ciclu de viață, care au traversat
+    # aceeași rețea. Cifra e numitorul confundătorului de la `calibration`.
+    events_metered = 0
     by_tier: Dict[str, Dict[str, int]] = {}
     disclosed_content_bytes = 0
     file_events_without_tier = 0
@@ -142,6 +148,7 @@ def compute_disclosure_metrics(
         # și _restart da, iar ele au traversat aceeași rețea.
         envelope_bytes = _payload_bytes(event)
         metadata_bytes += envelope_bytes
+        events_metered += 1
 
         # Conținutul se adună ÎNAINTE de orice ramificație pe treaptă. Un octet
         # care a părăsit endpoint-ul a plecat indiferent dacă știm cărei trepte
@@ -197,7 +204,36 @@ def compute_disclosure_metrics(
     tiered_content_bytes = sum(bucket["content_bytes"] for bucket in by_tier.values())
     content_bytes_without_tier = disclosed_content_bytes - tiered_content_bytes
 
-    total_sent = disclosed_content_bytes + metadata_bytes
+    estimated_sent = disclosed_content_bytes + metadata_bytes
+
+    # Numărătorul publicat: măsurat când există măsurătoare, estimat altfel.
+    #
+    # De ce NU se adună conținutul peste cifra măsurată:
+    #     Estimatul e `plic + conținut` pentru că plicul e reserializarea
+    #     evenimentului stocat, iar conținutul divulgat e declarat separat, în
+    #     blocul `disclosure`. Măsurătoarea e altceva: e corpul întreg al
+    #     cererii, așa cum a trecut prin socket. Când T2/T3 vor începe să
+    #     trimită conținut, acesta va călători ÎN corp, deci e deja înăuntru.
+    #     Adunat pe deasupra, ar fi numărat de două ori — iar cifra ar crește
+    #     exact în direcția care face protocolul să pară mai scump decât e.
+    #
+    #     `content_bytes` rămâne raportat, dar ca defalcare a numărătorului
+    #     măsurat, nu ca termen al lui.
+    #
+    # De ce zero măsurat NU e o măsurătoare:
+    #     Contabilizarea trăiește în memoria procesului. Un agent care nu-și
+    #     declară încarnarea, sau un server repornit, dau zero octeți măsurați
+    #     lângă evenimente reale în store. Publicat ca numărător, zero ar
+    #     însemna „acest endpoint n-a divulgat nimic" — cea mai flatantă
+    #     minciună posibilă despre un sistem de confidențialitate. Zero se
+    #     tratează deci ca absență de măsurătoare, iar cifra publicată revine la
+    #     estimare, declarată ca atare.
+    if measured_channel_bytes:
+        total_sent = measured_channel_bytes
+        numerator_source = "measured"
+    else:
+        total_sent = estimated_sent
+        numerator_source = "estimated"
 
     return {
         "scope": agent_id or "toti agentii",
@@ -214,10 +250,50 @@ def compute_disclosure_metrics(
             ),
         },
         "progressive": {
+            # Ce anume e cifra de mai jos. METRICS.md §8 cere ca orice cifră
+            # publicată să spună dacă e măsurată sau estimată; aici o spune ea
+            # însăși, în același obiect, ca nimeni s-o citească greșit.
+            "numerator_source": numerator_source,
+            "total_bytes": total_sent,
             "content_bytes": disclosed_content_bytes,
             "metadata_bytes": metadata_bytes,
-            "total_bytes": total_sent,
+            "measured_bytes": measured_channel_bytes,
+            "estimated_bytes": estimated_sent,
             "events_counted": len(file_events),
+        },
+        "calibration": {
+            "estimated_bytes": estimated_sent,
+            "measured_bytes": measured_channel_bytes,
+            # Cât greșește estimatorul, ca factor. Peste 1 înseamnă că pe fir a
+            # plecat mai mult decât reconstruiește reserializarea.
+            "factor": (
+                round(measured_channel_bytes / estimated_sent, 6)
+                if measured_channel_bytes and estimated_sent
+                else None
+            ),
+            "messages_measured": measured_channel_messages,
+            "events_metered": events_metered,
+            # Confundătorul, raportat lângă factor, nu ascuns în el: factorul NU
+            # e doar eroarea estimatorului. Măsurătoarea numără fiecare plecare
+            # (§1.3: coada e at-least-once, deci un eveniment poate pleca de mai
+            # multe ori) și numără și cererile respinse, în timp ce estimatorul
+            # reserializează evenimentele STOCATE, adică o dată fiecare.
+            #
+            # Cât timp raportul de mai jos e ~1, factorul descrie estimatorul.
+            # Când crește, o parte din el descrie retransmisiile — iar cine
+            # publică o cifră calibrată trebuie să vadă amândouă.
+            "messages_per_metered_event": (
+                round(measured_channel_messages / events_metered, 6)
+                if measured_channel_messages and events_metered
+                else None
+            ),
+            "note": (
+                "Factorul calibreaza cifrele per fisier de la §3.2, care raman "
+                "estimate: totalul agregat e masurat, dar registrul nu tine "
+                "octeti per eveniment, iar a-i pune in mesaj ar fi circular. "
+                "messages_per_metered_event separa eroarea estimatorului de "
+                "retransmisii; cat timp e ~1, factorul descrie estimatorul."
+            ),
         },
         "ratio": {
             # Cât la sută din always-upload a costat divulgarea progresivă.
