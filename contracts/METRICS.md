@@ -404,8 +404,37 @@ atomică cu incrementarea.
 Pragul se declară deci relativ, nu absolut: peste o dimensiune tipică de mesaj
 (altfel e doar traficul în zbor) **și** peste o fracțiune din totalul livrat de
 acea încarnare (altfel e zgomotos pentru un agent liniștit și orb pentru unul
-care trimite gigaocteți). Dimensiunea tipică se calculează din contoarele de
-mesaje, nu se ghicește.
+care trimite gigaocteți). Cele două condiții trebuie îndeplinite **simultan**;
+cu „sau" în loc de „și", fiecare ar anula apărarea celeilalte.
+
+Valorile de azi:
+
+| Parametru | Valoare | De ce |
+|---|---|---|
+| mesaje tolerate în zbor | 3 | dispecerul, bucla de heartbeat, plus decalajul de un mesaj al raportului |
+| fracțiune, `below_lower_bound` | 5% | contabilitate stricată de o parte sau de alta |
+| fracțiune, `above_upper_bound` | 1% | trafic în numele agentului sau canal necontabilizat |
+
+Direcția gravă e de cinci ori mai sensibilă, deliberat.
+
+**Ambele mărimi se calculează din măsurătorile serverului, nu din cifrele
+raportate.** Dimensiunea tipică e `received_bytes / received_messages`, iar
+fracțiunea se aplică peste `received_bytes`. Un prag calibrat pe cifre raportate
+s-ar lărgi singur exact atunci când raportarea e stricată — adică ar tăcea când
+trebuie să vorbească.
+
+**Verdictul și depășirea de prag sunt lucruri diferite**, iar metrica le
+raportează separat. Verdictul spune că încadrarea din §7.2 e ruptă; depășirea
+spune că ruptura e mai mare decât zgomotul cererilor în zbor. O încadrare ruptă
+sub prag rămâne vizibilă în `reconciliation`, dar nu ajunge în jurnal.
+
+Alarma emite la nivel `error`, cel mult o dată la interval, **per încarnare și
+per direcție**. Per direcție pentru că o încarnare care trece de la o margine la
+cealaltă spune ceva nou, nu repetă. Verificarea se face la fiecare cerere —
+discrepanța n-are eveniment propriu, e o stare care se poate schimba doar când
+sosesc cifre noi — dar emiterea nu, pentru că un log care se repetă la nesfârșit
+e un log pe care înveți să-l filtrezi, și atunci alarma a dispărut fără să fie
+ștearsă.
 
 ### 7.4 Ce raportează reconcilierea
 
@@ -459,7 +488,7 @@ agentul acela nu există trafic necontabilizat, ceea ce nu se poate ști.
 
 - `1.3a` — *livrat.* Blocul `disclosure` cu treapta și octeții ei de conținut,
   declarat, validat pe ambele părți și atribuit în tabelul de la §3.4.
-- `1.3b` — *parțial.* Livrat: serializarea explicită în transportul agentului,
+- `1.3b` — *livrat.* Serializarea explicită în transportul agentului,
   registrul de fir pe canale (`services/wire_ledger.py`), anteturile de la §7.1,
   contabilizarea pe server în middleware (`app/wire_middleware.py`,
   `app/services/wire_accounting.py`), reconcilierea de la §7.4 și **numărătorul
@@ -484,7 +513,8 @@ agentul acela nu există trafic necontabilizat, ceea ce nu se poate ști.
   rămâne raportat, dar ca **defalcare** a numărătorului măsurat, nu ca termen al
   lui.
 
-  Rămâne deschisă **alarma** la discrepanță persistentă.
+  Alarma la discrepanță persistentă e livrată (`app/services/wire_alarm.py`),
+  cu pragurile de la §7.3. Cu ea, `1.3b` e **închis**.
 
 **Reziduul cunoscut.** Prima înrolare a unei mașini rămâne neatribuibilă, din
 motivul explicat la §7.1: nu există încă o cheie care să dovedească identitatea,

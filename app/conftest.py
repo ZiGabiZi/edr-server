@@ -4,6 +4,7 @@ import app.services.agent_service as agent_service
 import app.services.auth_service as auth_service
 import app.services.event_service as event_service
 import app.services.wire_accounting as wire_accounting
+import app.services.wire_alarm as wire_alarm
 from app.tests.support import make_test_client
 
 
@@ -22,6 +23,7 @@ def client():
     # octetii unui test s-ar aduna peste ai urmatorului, iar testele ar trece
     # sau ar cadea dupa ordinea in care ruleaza.
     wire_accounting.reset_for_tests()
+    wire_alarm.reset_for_tests()
 
     return make_test_client()
 

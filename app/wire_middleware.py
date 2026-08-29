@@ -47,7 +47,7 @@ from typing import Callable
 
 from fastapi import FastAPI, Request, Response
 
-from app.services import auth_service, wire_accounting
+from app.services import auth_service, wire_accounting, wire_alarm
 
 
 logger = logging.getLogger(__name__)
@@ -181,6 +181,15 @@ def account_for_request(request: Request) -> None:
         reported_delivered=wire_accounting.parse_reported_bytes(raw_delivered),
         report_present=raw_attempted is not None or raw_delivered is not None,
     )
+
+    # Verificarea se face DUPA inregistrare, la fiecare cerere, pentru ca
+    # discrepanta n-are eveniment propriu: e o stare care se poate schimba doar
+    # cand sosesc cifre noi. Emiterea in jurnal e insa limitata in timp — vezi
+    # app/services/wire_alarm.py.
+    account = wire_accounting.account_for(agent_id, instance_id)
+
+    if account is not None:
+        wire_alarm.get_wire_alarm().observe(agent_id, instance_id, account)
 
 
 def install_wire_accounting(app: FastAPI) -> None:

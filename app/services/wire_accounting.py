@@ -301,7 +301,7 @@ VERDICT_UNREPORTED = "unreported"
 VERDICTS = (VERDICT_WITHIN, VERDICT_BELOW, VERDICT_ABOVE, VERDICT_UNREPORTED)
 
 
-def _reconcile(account: IncarnationAccount) -> Dict[str, Any]:
+def reconcile(account: IncarnationAccount) -> Dict[str, Any]:
     """
     Compară un raport cu măsurătoarea care îi corespunde.
 
@@ -359,6 +359,92 @@ def _reconcile(account: IncarnationAccount) -> Dict[str, Any]:
     }
 
 
+# Pragurile discrepanței (METRICS.md §7.3).
+#
+# Pragul e RELATIV, cu două condiții care trebuie îndeplinite simultan. Unul
+# absolut, în octeți, ar fi zgomotos pentru un agent liniștit și complet orb
+# pentru unul care trimite gigaocteți.
+#
+# Condiția întâi — peste câteva dimensiuni tipice de mesaj:
+#     O cerere în zbor produce mereu o diferență mică și legitimă. Toleranța nu
+#     e „un mesaj", ci câte mesaje pot fi simultan în zbor: azi dispecerul plus
+#     bucla de heartbeat, plus decalajul de un mesaj al raportului. Trei.
+#     Dimensiunea tipică o calculează serverul din propriile lui măsurători, NU
+#     din ce declară agentul — un prag calibrat pe cifre raportate s-ar putea
+#     lărgi singur exact când raportarea e stricată.
+#
+# Condiția a doua — peste o fracțiune din totalul livrat:
+#     Face pragul să scaleze cu volumul, altfel un parc mare l-ar depăși din
+#     zgomot iar unul mic n-ar ajunge la el niciodată.
+#
+# Fracțiunile diferă pe direcții, și asta e partea importantă:
+#     `above_upper_bound` — serverul a primit mai mult decât a trimis agentul —
+#     înseamnă ori trafic în numele lui, ori un canal necontabilizat. Prima e o
+#     problemă de securitate, a doua invalidează numărătorul afirmației
+#     centrale. E de cinci ori mai sensibilă decât cealaltă, deliberat.
+IN_FLIGHT_MESSAGE_ALLOWANCE = 3
+LOWER_BOUND_FRACTION = 0.05
+UPPER_BOUND_FRACTION = 0.01
+
+
+def typical_message_bytes(account: IncarnationAccount) -> Optional[float]:
+    """
+    Dimensiunea tipică a unui mesaj al acestei încarnări, din măsurători proprii.
+
+    None când n-a sosit încă niciun mesaj: fără el nu există „tipic", iar o
+    valoare implicită ghicită ar deveni pragul, adică exact ce încercăm să
+    evităm.
+    """
+    if not account.received_messages:
+        return None
+
+    return account.received_bytes / account.received_messages
+
+
+def threshold_breach(account: IncarnationAccount) -> Optional[Dict[str, Any]]:
+    """
+    Discrepanța acestei încarnări, dacă trece de prag. None altfel.
+
+    Întoarce direcția, mărimea golului și pragul care a fost depășit, ca cel
+    care citește să nu fie nevoit să recalculeze — și ca alarma și metrica să
+    spună exact același lucru, din același loc.
+    """
+    comparison = reconcile(account)
+
+    if comparison["verdict"] == VERDICT_WITHIN:
+        return None
+    if comparison["verdict"] == VERDICT_UNREPORTED:
+        return None
+
+    typical = typical_message_bytes(account)
+
+    if typical is None:
+        return None
+
+    if comparison["verdict"] == VERDICT_ABOVE:
+        gap = comparison["received_over_attempted"]
+        fraction = UPPER_BOUND_FRACTION
+    else:
+        gap = comparison["delivered_over_received"]
+        fraction = LOWER_BOUND_FRACTION
+
+    # Baza fracțiunii e ce a măsurat serverul, nu ce raportează agentul. Într-o
+    # discrepanță, cifra raportată e tocmai cea de care ne îndoim.
+    volume_threshold = fraction * account.received_bytes
+    message_threshold = IN_FLIGHT_MESSAGE_ALLOWANCE * typical
+
+    if gap <= message_threshold or gap <= volume_threshold:
+        return None
+
+    return {
+        "verdict": comparison["verdict"],
+        "gap_bytes": gap,
+        "message_threshold_bytes": round(message_threshold, 3),
+        "volume_threshold_bytes": round(volume_threshold, 3),
+        "typical_message_bytes": round(typical, 3),
+    }
+
+
 def reconciliation(agent_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Raportul de reconciliere: ce a măsurat serverul, față de ce declară agenții.
@@ -380,7 +466,7 @@ def reconciliation(agent_id: Optional[str] = None) -> Dict[str, Any]:
         if agent_id is not None and row_agent_id != agent_id:
             continue
 
-        comparison = _reconcile(account)
+        comparison = reconcile(account)
         verdict_counts[comparison["verdict"]] += 1
 
         rows.append(
@@ -392,6 +478,12 @@ def reconciliation(agent_id: Optional[str] = None) -> Dict[str, Any]:
                 "reported_attempted_bytes": account.reported_attempted_bytes,
                 "reported_delivered_bytes": account.reported_delivered_bytes,
                 "malformed_reports": account.malformed_reports,
+                # Depasirea de prag, langa verdict. Verdictul spune daca
+                # incadrarea e rupta; asta spune daca ruptura e mai mare decat
+                # zgomotul cererilor in zbor. Alarma foloseste exact aceeasi
+                # functie, ca log-ul si metrica sa nu poata spune lucruri
+                # diferite despre aceeasi incarnare.
+                "threshold_breach": threshold_breach(account),
                 "received_bytes_by_channel": {
                     channel: account.by_channel.get(channel, ChannelTotals()).bytes
                     for channel in CHANNELS
@@ -404,6 +496,7 @@ def reconciliation(agent_id: Optional[str] = None) -> Dict[str, Any]:
         "scope": agent_id or "all_agents",
         "incarnations": rows,
         "verdicts": verdict_counts,
+        "threshold_breaches": sum(1 for row in rows if row["threshold_breach"]),
         "unattributable": {
             "scope": "all_agents",
             "reasons": {
