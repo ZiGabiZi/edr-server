@@ -440,8 +440,18 @@ agentul acela nu există trafic necontabilizat, ceea ce nu se poate ști.
 - `1.3b` — *parțial.* Livrat: serializarea explicită în transportul agentului,
   registrul de fir pe canale (`services/wire_ledger.py`), anteturile de la §7.1,
   contabilizarea pe server în middleware (`app/wire_middleware.py`,
-  `app/services/wire_accounting.py`) și reconcilierea de la §7.4. Rămâne
-  deschisă **alarma** la discrepanță persistentă.
+  `app/services/wire_accounting.py`) și reconcilierea de la §7.4.
+
+  Rămân deschise **două** lucruri, iar primul e cel care poartă titlul acestei
+  secțiuni:
+
+  1. **Numărătorul publicat e încă estimatul.** Cifra măsurată există, dar stă
+     alături, în `reconciliation`. Secțiunile `progressive`, `always_upload` și
+     `ratio` vin în continuare din `disclosure_metrics.py::_payload_bytes`, iar
+     factorul de calibrare din §7.6 — totalul măsurat față de suma estimărilor —
+     nu se calculează nicăieri. Până atunci, cerința „măsurat, nu estimat" e
+     pregătită, nu îndeplinită.
+  2. **Alarma** la discrepanță persistentă.
 
 **O violare cunoscută, în picioare azi.** Payload-ul de înregistrare nu poartă
 `agent_instance_id` (edr-agent#19), deci octeții lui ajung în găleata de
