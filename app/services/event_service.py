@@ -8,14 +8,43 @@ ar face amândouă ar fi imposibil de citit fără să deschizi SQLite.
 """
 
 from datetime import datetime, timezone
-from typing import List, Dict, Optional
+from threading import Lock
+from typing import List, Dict, Optional, Set
 
 from app.schemas.event import EventCreateRequest
 from app.services import event_store, measurement_run
 
 
+# Rulările pentru care ACEST proces a primit evenimente.
+# ======================================================
+#
+# De ce e nevoie de mulțimea asta, și de ce e per proces:
+#     Contabilizarea de fir (`wire_accounting`) numără octeți de la pornirea
+#     procesului încoace, fără să știe nimic despre rulări. Numărătorul MĂSURAT
+#     al metricii vine de acolo. Dacă cineva cere metrica unei rulări vechi,
+#     cifra măsurată n-are nicio legătură cu ea — dar publicată alături, ar
+#     purta autoritatea unei măsurători.
+#
+#     Măsurătoarea descrie o singură rulare doar dacă procesul n-a primit
+#     evenimente în nicio alta. Tipic la o măsurătoare adevărată: pornești
+#     serverul, numești rularea, apoi trimiți corpusul — rularea generată de la
+#     pornire rămâne goală și nu strică nimic.
+#
+#     Mulțimea trăiește în memorie DELIBERAT: întrebarea la care răspunde e
+#     despre procesul curent, nu despre istoric. Persistată, ar spune altceva
+#     decât o întreabă cineva.
+_runs_observed_lock = Lock()
+_runs_observed: Set[str] = set()
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def runs_observed_this_process() -> Set[str]:
+    """Rulările în care acest proces a primit cel puțin un eveniment."""
+    with _runs_observed_lock:
+        return set(_runs_observed)
 
 
 def find_event_by_client_id(client_event_id: str) -> Optional[dict]:
@@ -61,7 +90,15 @@ def create_event(event: EventCreateRequest) -> dict:
         "status": "received",
     }
 
-    return event_store.insert_event(new_event)
+    stored = event_store.insert_event(new_event)
+
+    # Rularea evenimentului STOCAT, nu cea curentă: la o retransmisie, cele două
+    # diferă, iar cea care contează pentru atribuirea măsurătorii e rularea în
+    # care octeții au fost efectiv numărați prima dată.
+    with _runs_observed_lock:
+        _runs_observed.add(stored["run_id"])
+
+    return stored
 
 
 def get_all_events(run_id: Optional[str] = None) -> List[dict]:
@@ -91,16 +128,19 @@ def get_all_events(run_id: Optional[str] = None) -> List[dict]:
 
 def get_events_of_all_runs() -> List[dict]:
     """
-    Tot depozitul, peste toate rulările. Fără apelant în server azi.
+    Tot depozitul, peste toate rulările. Se cere explicit, niciodată implicit.
 
-    Există pentru că întrebarea e legitimă la analiză — câte evenimente s-au
-    adunat de când există baza — și pentru că altfel cineva ar fi tentat să o
-    răspundă cu `get_all_events()`, crezând că întoarce tot. Numele spune ce
-    face, tocmai ca greșeala aceea să nu poată fi făcută din reflex.
+    Numele e lung dinadins. Un `get_all_events()` care ar întoarce tot ar fi
+    fost citit din reflex ca „toate evenimentele", iar cifra calculată din el ar
+    fi amestecat experimente diferite fără ca nimeni să bănuiască. Aici,
+    apelantul nu poate ajunge din greșeală.
     """
     return event_store.all_events()
 
 
 def reset_for_tests() -> None:
     """Aruncă depozitul și repornește pe o bază din memorie. Vezi event_store."""
+    with _runs_observed_lock:
+        _runs_observed.clear()
+
     event_store.reset_for_tests()

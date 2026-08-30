@@ -5,10 +5,11 @@ Vezi app/services/measurement_run.py pentru ce e o rulare și de ce există.
 Aici stă doar traducerea în HTTP.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 
+from app.routes.scope import http_error_for
 from app.security import require_operator_secret
-from app.services import measurement_run
+from app.services import event_store, measurement_run
 from app.services.measurement_run import RunLabelError
 
 
@@ -16,16 +17,6 @@ router = APIRouter(
     prefix="/api/runs",
     tags=["Measurement runs"],
 )
-
-
-# Traducerea motivului în cod HTTP. Tabel, nu lanț de if-uri, ca un motiv nou
-# adăugat în serviciu fără corespondent aici să iasă zgomotos (KeyError la
-# prima folosire), nu tăcut ca un 400 nimerit din reflex.
-_STATUS_BY_REASON = {
-    RunLabelError.REASON_MALFORMED: status.HTTP_400_BAD_REQUEST,
-    RunLabelError.REASON_RESERVED: status.HTTP_400_BAD_REQUEST,
-    RunLabelError.REASON_ALREADY_USED: status.HTTP_409_CONFLICT,
-}
 
 
 @router.get("/current")
@@ -45,10 +36,21 @@ def list_runs() -> dict:
     """
     Rulările consemnate de procesul curent.
 
-    Cât timp registrul e în memorie (vezi limitarea declarată în serviciu),
-    lista descrie pornirea curentă a serverului, nu istoricul măsurătorilor.
+    E catalogul experimentelor: registrul e persistent, deci lista acoperă tot
+    ce s-a deschis vreodată, nu doar pornirea curentă a serverului.
+
+    Fiecare rulare vine cu numărul ei de evenimente, pentru că întrebarea care
+    urmează imediat după oricare etichetă e chiar aceea. O rulare cu zero
+    evenimente e un fapt util, nu o eroare: tipic, eticheta generată la pornire,
+    peste care operatorul a pus imediat numele din jurnal.
     """
-    runs = measurement_run.known_runs()
+    events_by_run = {
+        item["run_id"]: item["events"] for item in event_store.event_counts_by_run()
+    }
+    runs = [
+        {**run, "events": events_by_run.get(run["run_id"], 0)}
+        for run in measurement_run.known_runs()
+    ]
 
     return {
         "count": len(runs),
@@ -80,10 +82,7 @@ def open_run(
     try:
         run = measurement_run.start_run(label)
     except RunLabelError as error:
-        raise HTTPException(
-            status_code=_STATUS_BY_REASON[error.reason],
-            detail=str(error),
-        )
+        raise http_error_for(error)
 
     return {
         "message": "Measurement run opened",

@@ -1,8 +1,13 @@
 from fastapi import APIRouter, Depends, HTTPException
 
 from app.schemas.event import EventCreateRequest
+from app.routes.scope import RunScope, RunScopeDependency
 from app.security import authenticated_agent_id, require_identity_match
-from app.services.event_service import create_event, get_all_events
+from app.services.event_service import (
+    create_event,
+    get_all_events,
+    get_events_of_all_runs,
+)
 from app.services.agent_service import agent_exists
 
 
@@ -48,14 +53,18 @@ def receive_event(
 
 
 @router.get("")
-def list_events() -> dict:
+def list_events(scope: RunScope = RunScopeDependency) -> dict:
     """
-    Fluxul de evenimente al întregului parc, din rularea de măsurătoare CURENTĂ.
+    Fluxul de evenimente al întregului parc, dintr-o rulare de măsurătoare.
 
-    Restrângerea la rulare nu îngustează ce se vedea înainte, o păstrează: până
-    la persistență, depozitul conținea prin construcție doar evenimentele
-    pornirii curente. Un implicit care ar întoarce tot istoricul ar schimba
-    tăcut înțelesul rutei — vezi event_service.get_all_events.
+    Implicit, rularea CURENTĂ. Restrângerea nu îngustează ce se vedea înainte, o
+    păstrează: până la persistență, depozitul conținea prin construcție doar
+    evenimentele pornirii curente. Un implicit care ar întoarce tot istoricul ar
+    schimba tăcut înțelesul rutei.
+
+    `run_id` cere altă rulare, `all_runs=true` cere agregatul peste toate.
+    Răspunsul poartă întotdeauna rularea pe care o descrie, ca nimeni să nu
+    citească un flux crezând că e al altui experiment.
 
     GAURĂ CUNOSCUTĂ, TRATATĂ SEPARAT: ruta nu cere nicio credențială — vezi
     nota de la GET /api/agents și AUTH.md. Aici miza e mai mare decât la
@@ -64,8 +73,14 @@ def list_events() -> dict:
     pentru altcineva; separarea drepturilor de citire de cele de scriere e
     pasul următor declarat, nu unul făcut aici.
     """
-    events = get_all_events()
+    events = (
+        get_events_of_all_runs()
+        if scope.covers_all_runs
+        else get_all_events(scope.run_id)
+    )
+
     return {
+        "run": scope.declaration(),
         "count": len(events),
-        "events": events
+        "events": events,
     }

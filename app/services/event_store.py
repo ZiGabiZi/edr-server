@@ -398,6 +398,43 @@ def register_run(run_id: str, source: str, opened_at: str) -> bool:
         return cursor.rowcount == 1
 
 
+def event_counts_by_run() -> List[Dict[str, Any]]:
+    """
+    Câte evenimente are fiecare rulare, cele mai vechi întâi.
+
+    E declarația de corpus cerută de METRICS.md §8 pentru cazul agregat: o cifră
+    peste mai multe rulări nu descrie niciun experiment, iar cine o publică
+    trebuie să poată spune din ce e făcută. Rulările fără evenimente nu apar —
+    ele n-au contribuit cu nimic la cifră.
+    """
+    with _lock:
+        connection = _connection_locked()
+
+        rows = connection.execute(
+            "SELECT run_id, COUNT(*) FROM events GROUP BY run_id "
+            "ORDER BY MIN(event_id)"
+        ).fetchall()
+
+    return [{"run_id": run_id, "events": events} for run_id, events in rows]
+
+
+def run_record(run_id: str) -> Optional[Dict[str, str]]:
+    """Rularea din registru, cu sursa și ora deschiderii, sau None."""
+    with _lock:
+        connection = _connection_locked()
+
+        row = connection.execute(
+            "SELECT run_id, source, opened_at FROM measurement_runs "
+            "WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return {"run_id": row[0], "source": row[1], "opened_at": row[2]}
+
+
 def run_exists(run_id: str) -> bool:
     with _lock:
         connection = _connection_locked()
