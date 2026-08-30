@@ -1,3 +1,7 @@
+import logging
+import tempfile
+from pathlib import Path
+
 import pytest
 
 import app.services.agent_service as agent_service
@@ -6,6 +10,55 @@ import app.services.event_service as event_service
 import app.services.wire_accounting as wire_accounting
 import app.services.wire_alarm as wire_alarm
 from app.tests.support import make_test_client
+
+
+# Jurnalul suitei, deviat din server.log.
+# =======================================
+#
+# De ce e nevoie:
+#     Suita exercită alarma de discrepanță, care emite la nivel ERROR. Fără
+#     devierea asta, `server.log` se umple cu incidente fabricate — agenți
+#     numiți `agent-1`, încarnări `inc-1`, praguri rotunde — amestecate printre
+#     cele reale. Cine caută peste o lună un incident adevărat, cu
+#     `grep "Wire discrepancy"`, găsește ambele feluri și n-are cum să le
+#     deosebească. Un jurnal în care nu poți avea încredere e mai rău decât unul
+#     care lipsește: primul te face să tragi concluzii.
+#
+# De ce se scot handlerele explicit, în loc de un basicConfig() pus mai sus:
+#     Prima versiune făcea exact asta și NU funcționa, într-un mod care merită
+#     ținut minte: `logging.basicConfig()` nu face nimic dacă logger-ul rădăcină
+#     are deja handlere. La rularea suitei întregi, pytest și le instalează pe
+#     ale lui înainte de importul acestui fișier, deci apelul devenea o
+#     operațiune goală; la rularea unui singur fișier de test, nu, și atunci
+#     funcționa. Adică un comportament care depindea de câte teste rulezi.
+#
+#     Codul de aici nu întreabă cine a ajuns primul: caută handlerul care scrie
+#     în server.log, îl scoate și îl închide, apoi pune al lui. Rezultatul e
+#     același indiferent de ordinea importurilor.
+#
+# De ce un fișier și nu tăcere completă:
+#     Un handler nul ar ascunde exact liniile utile când un test pică din motive
+#     de logică. Fișierul stă în directorul temporar al sistemului, se rescrie la
+#     fiecare rulare, și nu intră niciodată în repo.
+TEST_LOG_PATH = Path(tempfile.gettempdir()) / "edr-server-tests.log"
+SERVER_LOG_PATH = Path(__file__).resolve().parent.parent / "server.log"
+
+
+def _redirect_logging_away_from_server_log() -> None:
+    root = logging.getLogger()
+
+    for handler in list(root.handlers):
+        if Path(getattr(handler, "baseFilename", "")) == SERVER_LOG_PATH:
+            root.removeHandler(handler)
+            handler.close()
+
+    root.addHandler(
+        logging.FileHandler(TEST_LOG_PATH, mode="w", encoding="utf-8")
+    )
+    root.setLevel(logging.INFO)
+
+
+_redirect_logging_away_from_server_log()
 
 
 @pytest.fixture
