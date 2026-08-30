@@ -153,7 +153,7 @@ class TestTheThreeStates:
 
 
 class TestTheFirstEnrollmentResidue:
-    def test_unattributed_enrollment_bytes_break_the_lower_bound(
+    def test_unattributed_enrollment_bytes_become_a_declared_baseline(
         self, client, registered_agent_id
     ):
         """
@@ -167,13 +167,13 @@ class TestTheFirstEnrollmentResidue:
         declarata raporteaza octeti livrati pe care contul incarnarii nu i-a
         vazut niciodata.
 
-        Pana la edr-agent#19 acelasi gol aparea la FIECARE incarnare, pentru ca
-        inregistrarea nu purta deloc incarnarea. Acum e o singura data in viata
-        unei masini — sub conditia „peste o dimensiune tipica de mesaj" din
-        par. 7.3, deci nu cere prag largit.
+        Pana la edr-server#11, cazul iesea ca margine de jos rupta — adevarat,
+        dar nefolositor: un verdict de violare pentru ceva ce nu e o
+        nepotrivire, ci o parte a incarnarii pe care serverul n-a masurat-o.
 
-        Testul ramane pentru mecanism: asa arata o margine de jos rupta, si
-        metrica trebuie s-o vada.
+        Acum e adoptie: reziduul devine linie de baza, iar marimea lui se
+        raporteaza explicit. E o descriere mai onesta a aceleiasi realitati —
+        octetii nu dispar, dar nici nu sunt acuzati ca discrepanta.
         """
         enrollment_bytes = 300
         key = client.issued_keys[registered_agent_id]
@@ -185,9 +185,29 @@ class TestTheFirstEnrollmentResidue:
         )
 
         row = _row()
-        assert row["verdict"] == wire_accounting.VERDICT_BELOW
-        assert row["compared_against_received_bytes"] == 0
-        assert row["delivered_over_received"] == enrollment_bytes
+        assert row["verdict"] == wire_accounting.VERDICT_WITHIN
+        assert row["adoption"]["adopted_mid_flight"] is True
+        assert row["adoption"]["unmeasured_before_adoption_bytes"] == enrollment_bytes
+
+    def test_a_genuinely_fresh_incarnation_is_not_adopted(
+        self, client, registered_agent_id
+    ):
+        # Conditia care desparte cele doua cazuri e ca totalurile sa fie NENULE.
+        # Un agent care tocmai a pornit raporteaza zerouri, iar acolo comparatia
+        # cu zero masurat e corecta: e chiar inceputul incarnarii. Adoptat, ar
+        # ascunde inceputul unei incarnari pe care serverul chiar a vazut-o de
+        # la capat.
+        key = client.issued_keys[registered_agent_id]
+
+        client.post(
+            "/api/events",
+            content=_event_body(registered_agent_id),
+            headers=_headers(key, attempted=0, delivered=0),
+        )
+
+        row = _row()
+        assert row["adoption"]["adopted_mid_flight"] is False
+        assert row["adoption"]["unmeasured_before_adoption_bytes"] is None
 
 
 class TestWhatTheRowSays:

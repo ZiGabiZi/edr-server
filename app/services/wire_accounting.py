@@ -111,6 +111,32 @@ class IncarnationAccount:
     # că el e cel comparabil cu anteturile agentului, care nu despart canalele.
     by_channel: Mapping[str, ChannelTotals] = field(default_factory=dict)
 
+    # Linia de bază, când serverul prinde o încarnare din mers.
+    #
+    # Cazul care le-a impus: serverul repornește, agentul nu. Contabilitatea
+    # trăiește în memoria procesului, deci încarnarea dispare de pe server — dar
+    # contoarele agentului sunt per încarnare, nu per conexiune, și cresc mai
+    # departe. Prima cerere de după repornire aduce un total mare lângă un cont
+    # cu zero măsurat.
+    #
+    # Comparat direct, golul ar fi tot ce a trimis agentul până atunci, iar
+    # alarma ar suna pentru fiecare agent care rulează, după fiecare deploy.
+    # Or, aceea nu e o discrepanță: nu se poate reconcilia ce n-ai apucat să
+    # măsori. E o linie de bază.
+    #
+    # Adopția e oglinda tratamentului pentru repornirea AGENTULUI. Acolo,
+    # încarnarea nouă face contoarele să pornească de la zero pe ambele părți
+    # simultan. Aici doar o parte s-a resetat, deci diferența trebuie scoasă din
+    # comparație explicit.
+    adopted_attempted_bytes: Optional[int] = None
+    adopted_delivered_bytes: Optional[int] = None
+    received_bytes_at_adoption: Optional[int] = None
+
+    @property
+    def was_adopted(self) -> bool:
+        """True dacă serverul a prins încarnarea din mers, nu de la începutul ei."""
+        return self.adopted_attempted_bytes is not None
+
 
 @dataclass(frozen=True)
 class UnattributableCounters:
@@ -183,6 +209,34 @@ def record_attributed(
         account = _store.incarnations.get(key, IncarnationAccount())
 
         if reported_attempted is not None or reported_delivered is not None:
+            # Adopția: primul raport lizibil al unei încarnări pe care serverul
+            # n-a văzut-o niciodată, dacă vine deja cu totaluri nenule.
+            #
+            # Nenule e condiția care desparte cele două cazuri. Un agent care
+            # tocmai a pornit raportează zerouri, iar acolo comparația cu zero
+            # măsurat e CORECTĂ — e chiar începutul încarnării. Totaluri mari la
+            # prima vedere înseamnă că încarnarea trăiește de dinainte, deci
+            # serverul a pierdut începutul.
+            #
+            # Se reține și cât măsurase serverul în clipa adopției: dacă au
+            # sosit cereri înainte de primul raport lizibil, octeții lor sunt
+            # deja în totalul raportat de agent, iar scăderea trebuie făcută pe
+            # ambele părți ca să rămână comparabile.
+            is_first_report = (
+                account.reported_attempted_bytes is None
+                and account.reported_delivered_bytes is None
+                and not account.was_adopted
+            )
+            arrives_mid_flight = bool(reported_attempted) or bool(reported_delivered)
+
+            if is_first_report and arrives_mid_flight:
+                account = replace(
+                    account,
+                    adopted_attempted_bytes=reported_attempted or 0,
+                    adopted_delivered_bytes=reported_delivered or 0,
+                    received_bytes_at_adoption=account.received_bytes,
+                )
+
             account = replace(
                 account,
                 reported_attempted_bytes=(
@@ -337,6 +391,15 @@ def reconcile(account: IncarnationAccount) -> Dict[str, Any]:
             "reported_undelivered_bytes": None,
         }
 
+    # Când încarnarea a fost prinsă din mers, comparația se face pe CREȘTEREA de
+    # la adopție încoace, pe ambele părți. Ce a fost înainte nu e o nepotrivire,
+    # e o parte a încarnării pe care serverul n-a măsurat-o — și se raportează
+    # ca atare, la `adoption`, nu se ascunde în verdict.
+    if account.was_adopted:
+        attempted -= account.adopted_attempted_bytes or 0
+        delivered -= account.adopted_delivered_bytes or 0
+        measured -= account.received_bytes_at_adoption or 0
+
     delivered_over_received = delivered - measured
     received_over_attempted = measured - attempted
 
@@ -478,6 +541,22 @@ def reconciliation(agent_id: Optional[str] = None) -> Dict[str, Any]:
                 "reported_attempted_bytes": account.reported_attempted_bytes,
                 "reported_delivered_bytes": account.reported_delivered_bytes,
                 "malformed_reports": account.malformed_reports,
+                # Adoptia, declarata. Fara ea, „am prins incarnarea tarziu" si
+                # „totul se potriveste" ar arata identic — am fi inlocuit o
+                # alarma falsa cu o tacere falsa.
+                #
+                # unmeasured_before_adoption_bytes e divulgare reala pe care
+                # ACEST server n-a masurat-o. Cifra vine de la agent, deci e
+                # raportata, nu masurata; sta aici tocmai ca sa nu dispara din
+                # numaratorul masurat fara sa spuna nimeni.
+                "adoption": {
+                    "adopted_mid_flight": account.was_adopted,
+                    "unmeasured_before_adoption_bytes": (
+                        account.adopted_attempted_bytes
+                        if account.was_adopted
+                        else None
+                    ),
+                },
                 # Depasirea de prag, langa verdict. Verdictul spune daca
                 # incadrarea e rupta; asta spune daca ruptura e mai mare decat
                 # zgomotul cererilor in zbor. Alarma foloseste exact aceeasi
@@ -497,6 +576,15 @@ def reconciliation(agent_id: Optional[str] = None) -> Dict[str, Any]:
         "incarnations": rows,
         "verdicts": verdict_counts,
         "threshold_breaches": sum(1 for row in rows if row["threshold_breach"]),
+        "adopted_mid_flight": sum(
+            1 for row in rows if row["adoption"]["adopted_mid_flight"]
+        ),
+        # Cat a divulgat parcul inainte ca ACEST server sa apuce sa masoare.
+        # Tipic: traficul de dinaintea ultimei reporniri de server. Zero
+        # inseamna ca numaratorul masurat acopera tot ce s-a trimis.
+        "unmeasured_before_adoption_bytes": sum(
+            row["adoption"]["unmeasured_before_adoption_bytes"] or 0 for row in rows
+        ),
         "unattributable": {
             "scope": "all_agents",
             "reasons": {
