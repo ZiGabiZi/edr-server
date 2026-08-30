@@ -65,8 +65,13 @@ _redirect_logging_away_from_server_log()
 @pytest.fixture
 def client():
     agent_service.agents_store.clear()
-    event_service.events_store.clear()
-    event_service._events_by_client_id.clear()
+
+    # Depozitul de evenimente e persistent din 1.4.2, deci golirea lui nu mai e
+    # o listă ștearsă: baza se aruncă și se redeschide în memorie. Fără asta,
+    # suita ar scrie edr_server.db în rădăcina repo-ului și ar duce evenimente
+    # dintr-o rulare a suitei în următoarea — aceeași grijă ca la cheile de
+    # agent, dezactivate mai jos.
+    event_service.reset_for_tests()
 
     # Golește depozitul de chei ȘI dezactivează persistența lui: fără asta,
     # suita ar scrie agent_keys.json în rădăcina repo-ului și ar duce credențiale

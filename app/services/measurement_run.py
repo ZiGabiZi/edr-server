@@ -49,13 +49,25 @@ De ce o etichetă folosită o dată nu se mai poate refolosi:
     problema pentru care jurnalul are regula că un commit de montaj nu se
     modifică prin amend sau push --force. Aici echivalentul e un refuz, cu 409.
 
-    LIMITARE DECLARATĂ, până la 1.4.2: registrul etichetelor folosite trăiește
-    în memoria procesului, ca evenimentele. Refuzul e deci real doar în
-    interiorul unei rulări a serverului. Nu e un gol: cât timp evenimentele mor
-    la repornire, refolosirea unei etichete după restart nu poate amesteca
-    nimic, fiindcă nu mai există nimic de amestecat. Odată ce evenimentele
-    ajung pe disc, registrul trebuie să ajungă în ACEEAȘI bază cu ele — altfel
-    s-ar goli exact la restartul care face refolosirea probabilă și periculoasă.
+    Registrul etichetelor folosite trăiește în ACEEAȘI bază cu evenimentele
+    (app/services/event_store.py), nu în memorie. În memorie s-ar fi golit exact
+    la repornirea care face refolosirea probabilă și periculoasă: după un
+    restart, o etichetă publicată ar fi redevenit liberă, iar datele noi ar fi
+    curs peste cifre deja citate.
+
+Ce NU supraviețuiește repornirii, deliberat:
+    Rularea CURENTĂ. Registrul e persistent, indicatorul spre rularea deschisă
+    nu e: fiecare pornire de server deschide o etichetă generată nouă. Așa se
+    păstrează comportamentul de azi, dar mai ales se închide varianta
+    periculoasă a alternativei — o rulare numită de operator care ar rămâne
+    deschisă peste restarturi ar aduna tăcut, peste săptămâni, tot ce trimite
+    parcul, inclusiv sesiuni de depanare care n-au nicio legătură cu
+    experimentul.
+
+    Prețul e vizibil și se declară: un experiment întrerupt de o repornire NU se
+    poate relua sub aceeași etichetă, pentru că refolosirea e refuzată. Se
+    continuă sub o etichetă nouă, iar analiza le adună explicit pe amândouă.
+    Ruptura rămâne astfel un fapt consemnat, nu o lipitură invizibilă.
 
 De ce prefixul generatelor e rezervat:
     Un `auto-` la începutul unei etichete de operator ar face imposibil de spus,
@@ -71,6 +83,8 @@ import secrets
 from datetime import datetime, timezone
 from threading import Lock
 from typing import Dict, List, Optional
+
+from app.services import event_store
 
 
 logger = logging.getLogger(__name__)
@@ -118,9 +132,17 @@ class RunLabelError(ValueError):
         self.reason = reason
 
 
+# Rularea curentă e stare de PROCES; registrul etichetelor e în depozit. Cele
+# două ținute în locuri diferite nu e o scăpare, e chiar decizia: vezi antetul.
 _lock = Lock()
-_runs: Dict[str, Dict[str, str]] = {}
-_current_label: Optional[str] = None
+_current_run: Optional[Dict[str, str]] = None
+
+# De câte ori se mai încearcă o etichetă generată dacă prima e deja în registru.
+# Coliziunea cere două porniri în aceeași secundă care nimeresc și același sufix
+# aleator, deci practic nu se întâmplă — dar cu registrul pe disc consecința ei
+# ar fi un server care nu mai poate deschide nicio rulare, adică unul care nu
+# mai primește evenimente. O buclă scurtă e mai ieftină decât riscul acela.
+_GENERATED_LABEL_ATTEMPTS = 8
 
 
 def _utc_now() -> str:
@@ -175,17 +197,28 @@ def validate_operator_label(label: str) -> str:
     return label
 
 
-def _open_locked(label: str, source: str) -> Dict[str, str]:
-    """Înscrie eticheta în registru și o face curentă. Cere _lock deținut."""
-    global _current_label
+def _open_locked(label: str, source: str) -> Optional[Dict[str, str]]:
+    """
+    Înscrie eticheta în registrul persistent și o face curentă.
+
+    Întoarce None dacă eticheta fusese deja folosită. Cere _lock deținut.
+
+    Refuzul vine din cheia primară a tabelului, nu dintr-o citire făcută înainte
+    de scriere: între cele două ar încăpea o a doua cerere, iar fereastra aceea
+    e exact cazul pe care mecanismul îl apără.
+    """
+    global _current_run
 
     record = {
         "run_id": label,
         "source": source,
         "opened_at": _utc_now(),
     }
-    _runs[label] = record
-    _current_label = label
+
+    if not event_store.register_run(label, source, record["opened_at"]):
+        return None
+
+    _current_run = record
 
     return record
 
@@ -199,15 +232,23 @@ def _ensure_current_locked() -> Dict[str, str]:
     ar deschide o rulare chiar și în procese care nu primesc niciun eveniment —
     de pildă la un import făcut de un instrument de documentare.
     """
-    if _current_label is None:
-        record = _open_locked(generate_label(), SOURCE_GENERATED)
-        logger.info(
-            "No measurement run was named; events will be labelled %s.",
-            record["run_id"],
-        )
-        return record
+    if _current_run is not None:
+        return _current_run
 
-    return _runs[_current_label]
+    for _ in range(_GENERATED_LABEL_ATTEMPTS):
+        record = _open_locked(generate_label(), SOURCE_GENERATED)
+
+        if record is not None:
+            logger.info(
+                "No measurement run was named; events will be labelled %s.",
+                record["run_id"],
+            )
+            return record
+
+    raise RuntimeError(
+        "Could not open a generated measurement run: every candidate label was "
+        "already present in the register"
+    )
 
 
 def current_run() -> Dict[str, str]:
@@ -239,13 +280,16 @@ def start_run(label: str) -> Dict[str, str]:
         # sosite în el ar purta o etichetă care nu apare nicăieri în listă.
         _ensure_current_locked()
 
-        if label in _runs:
+        record = _open_locked(label, SOURCE_OPERATOR)
+
+        if record is None:
             raise RunLabelError(
                 RunLabelError.REASON_ALREADY_USED,
-                f"Run {label} has already been used and cannot be reopened",
+                f"Run {label} has already been used and cannot be reopened. A "
+                f"measurement interrupted by a restart continues under a new "
+                f"label; reopening one would pour fresh data into figures that "
+                f"have already been quoted",
             )
-
-        record = _open_locked(label, SOURCE_OPERATOR)
 
     logger.info("Measurement run %s opened by the operator.", label)
 
@@ -253,22 +297,30 @@ def start_run(label: str) -> Dict[str, str]:
 
 
 def known_runs() -> List[Dict[str, str]]:
-    """Rulările consemnate de procesul curent, în ordinea deschiderii."""
+    """
+    Toate rulările consemnate vreodată, cele mai vechi întâi.
+
+    Nu doar cele ale procesului curent: registrul e persistent, iar lista lui e
+    chiar catalogul experimentelor. Rularea curentă se deschide înainte de
+    citire, ca ea să apară în listă și la prima interogare de după pornire.
+    """
     with _lock:
         _ensure_current_locked()
-        return [dict(record) for record in _runs.values()]
+
+    return event_store.known_runs()
 
 
 def reset_for_tests() -> None:
     """
     Golește registrul și uită rularea curentă.
 
-    Fără el, prima etichetă folosită de un test ar rămâne consemnată pentru
-    restul suitei, iar al doilea test care o cere ar primi 409 — adică teste
-    care trec sau cad după ordinea în care rulează.
+    Registrul propriu-zis se aruncă odată cu depozitul, în
+    `event_store.reset_for_tests`. Fără amândouă, prima etichetă folosită de un
+    test ar rămâne consemnată pentru restul suitei, iar al doilea test care o
+    cere ar primi 409 — adică teste care trec sau cad după ordinea în care
+    rulează.
     """
-    global _current_label
+    global _current_run
 
     with _lock:
-        _runs.clear()
-        _current_label = None
+        _current_run = None

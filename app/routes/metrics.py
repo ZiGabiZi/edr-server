@@ -18,9 +18,22 @@ def disclosure_metrics(agent_id: Optional[str] = Query(default=None)) -> dict:
     """
     Costul divulgării progresive față de alternativa always-upload.
 
-    Ruta există pentru că `events_store` trăiește în memoria procesului server:
-    un script separat nu are cum să îl vadă, iar metrica trebuie citită din
-    datele unei rulări reale, nu dintr-o reconstrucție.
+    De ce ruta rămâne, deși evenimentele sunt acum pe disc:
+        Motivul inițial a fost că `events_store` trăia în memoria procesului,
+        deci un script separat n-avea cum să îl vadă. Din 1.4.2 motivul acela nu
+        mai e adevărat — evenimentele se pot citi din SQLite din afara
+        serverului. Rămân însă două care nu se pot muta:
+
+        Contabilizarea de fir (`wire_accounting`) e stare de proces, alimentată
+        de middleware la fiecare cerere. Numărătorul MĂSURAT al metricii vine de
+        acolo, iar un script din afară nu are de unde să îl ia; ar putea calcula
+        doar varianta estimată, adică exact cifra pe care METRICS.md §7 o
+        declară insuficientă.
+
+        Și, mai important, definițiile. Numitorul, atribuirea pe trepte, golurile
+        declarate — toate stau într-un singur loc, aici. Un script care le-ar
+        reimplementa ar putea da o cifră diferită pentru aceleași date, fără ca
+        vreuna dintre ele să fie vizibil greșită.
 
     GAURĂ CUNOSCUTĂ, ACEEAȘI CU CEA DE LA RUTELE DE CITIRE (edr-server#9):
         nu cere nicio credențială. NU o lărgește însă: agregatul de aici e

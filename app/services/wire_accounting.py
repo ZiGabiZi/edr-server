@@ -645,7 +645,7 @@ def reset_for_tests() -> None:
     """
     Golește contabilitatea între teste.
 
-    Contabilitatea e stare de proces, ca `agents_store` și `events_store`: fără
+    Contabilitatea e stare de proces, ca `agents_store`: fără
     golire, cifrele unei rulări de test s-ar aduna peste ale următoarei, iar
     testele ar trece sau ar cădea în funcție de ordinea în care rulează.
     """

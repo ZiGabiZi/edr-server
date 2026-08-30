@@ -50,7 +50,12 @@ def receive_event(
 @router.get("")
 def list_events() -> dict:
     """
-    Fluxul de evenimente al întregului parc.
+    Fluxul de evenimente al întregului parc, din rularea de măsurătoare CURENTĂ.
+
+    Restrângerea la rulare nu îngustează ce se vedea înainte, o păstrează: până
+    la persistență, depozitul conținea prin construcție doar evenimentele
+    pornirii curente. Un implicit care ar întoarce tot istoricul ar schimba
+    tăcut înțelesul rutei — vezi event_service.get_all_events.
 
     GAURĂ CUNOSCUTĂ, TRATATĂ SEPARAT: ruta nu cere nicio credențială — vezi
     nota de la GET /api/agents și AUTH.md. Aici miza e mai mare decât la

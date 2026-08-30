@@ -34,8 +34,7 @@ ENROLLMENT_SECRET = "test-enrollment-secret"
 def raw_client():
     """Client fără niciun antet automat — trimite exact ce cere testul."""
     agent_service.agents_store.clear()
-    event_service.events_store.clear()
-    event_service._events_by_client_id.clear()
+    event_service.reset_for_tests()
     auth_service.reset_for_tests(ENROLLMENT_SECRET)
     return TestClient(app)
 

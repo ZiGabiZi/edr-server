@@ -14,6 +14,7 @@ Cele patru proprietăți păzite aici:
     4. partea măsurată nu poate renumi măsurătoarea.
 """
 
+import app.services.event_service as event_service
 import app.services.measurement_run as measurement_run
 
 
@@ -38,11 +39,16 @@ def _post_file_event(client, agent_id: str, client_event_id: str):
     )
 
 
-def _stored_events(client):
-    response = client.get("/api/events")
-    assert response.status_code == 200, response.text
+def _stored_events():
+    """
+    Depozitul peste TOATE rularile, nu doar cea curenta.
 
-    return response.json()["events"]
+    Deliberat pe langa GET /api/events: ruta aceea intoarce, din 1.4.2, doar
+    rularea curenta — exact comportamentul de dinainte de persistenta. Testele
+    de aici verifica insa granita dintre rulari, deci au nevoie sa vada de
+    ambele parti ale ei.
+    """
+    return event_service.get_events_of_all_runs()
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +192,7 @@ def test_events_keep_the_run_they_arrived_in(client, registered_agent_id):
     assert _post_file_event(client, registered_agent_id, "evt-dupa").status_code == 200
 
     by_client_id = {
-        event["client_event_id"]: event["run_id"] for event in _stored_events(client)
+        event["client_event_id"]: event["run_id"] for event in _stored_events()
     }
 
     assert by_client_id["evt-inainte"] == generated
@@ -214,7 +220,7 @@ def test_a_retransmission_keeps_the_run_of_its_first_arrival(
     assert again.status_code == 200, again.text
     assert again.json()["event"]["run_id"] == generated
 
-    events = _stored_events(client)
+    events = _stored_events()
     assert len(events) == 1, "Deduplicarea a încetat să mai funcționeze."
 
 

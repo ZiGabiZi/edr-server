@@ -6,6 +6,7 @@ pierderile sunt derivate din contorul de secvență, iar repornirile din agent_i
 import app.services.agent_service as agent_svc
 import app.services.auth_service as auth_svc
 import app.services.event_service as event_svc
+import app.services.measurement_run as measurement_run
 from app.tests.support import make_test_client
 from datetime import datetime, timedelta, timezone
 
@@ -14,7 +15,8 @@ client = make_test_client()
 
 def setup_function():
     agent_svc.agents_store.clear()
-    event_svc.events_store.clear()
+    event_svc.reset_for_tests()
+    measurement_run.reset_for_tests()
     auth_svc.reset_for_tests()
     client.forget_keys()
 

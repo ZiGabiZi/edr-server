@@ -3,6 +3,12 @@ __pycache__/
 .venv/
 .env
 *.db
+# Fisierele auxiliare ale modului WAL. *.db nu le prinde: SQLite le
+# numeste <baza>.db-wal si <baza>.db-shm, iar cel de-al doilea sufix
+# scoate numele din gluma *.db. Jurnalul WAL contine evenimente inca
+# necomise in fisierul principal, deci nu e un temporar oarecare.
+*.db-wal
+*.db-shm
 *.log
 logs/
 *.swp
