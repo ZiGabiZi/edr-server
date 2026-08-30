@@ -98,6 +98,49 @@ def authenticated_agent_id(
     return agent_id
 
 
+def require_operator_secret(
+    x_enrollment_secret: Optional[str] = Header(default=None),
+) -> None:
+    """
+    Dependency FastAPI: lasă să treacă numai cine deține secretul de înrolare.
+
+    De ce o rută de operator are nevoie de pază, când GET /api/agents și
+    GET /api/events n-au:
+        Acelea sunt CITIRI, iar gaura lor e declarată și urmărită separat
+        (edr-server#9). Deschiderea unei rulări de măsurătoare e o SCRIERE, și
+        una de un fel aparte: nu adaugă date, ci schimbă înțelesul datelor care
+        vin după ea. Cine poate reeticheta din exterior poate muta evenimentele
+        unui experiment în corpusul altuia, iar rezultatul nu arată stricat —
+        arată exact ca o măsurătoare, cu alte numere. Un mecanism construit
+        tocmai ca cifrele să nu poată minți n-are voie să fie el însuși
+        rescriabil de oricine deschide un socket.
+
+    De ce secretul de ÎNROLARE și nu o credențială proprie:
+        E singura credențială de nivel de operator pe care serverul o are azi.
+        Reutilizarea e o alegere declarată, nu o scăpare, și are o limită reală:
+        secretul se șterge de pe endpoint după prima folosire reușită (vezi
+        auth_service), deci în practică rămâne la instalator, nu în parc. Un
+        secret de analist, separat, e pasul care închide și cele trei rute de
+        citire — o schimbare proprie, nu una strecurată aici.
+
+    De ce nu cheia unui agent:
+        Ar însemna că orice endpoint monitorizat poate renumi experimentul care
+        îl măsoară. Partea măsurată nu decide cum se numește măsurătoarea.
+    """
+    if auth_service.verify_enrollment_secret(x_enrollment_secret):
+        return
+
+    logger.warning(
+        "Rejected an operator request with an unrecognized or missing %s header.",
+        auth_service.ENROLLMENT_SECRET_HEADER,
+    )
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="This route requires the operator (enrollment) secret",
+        headers={"WWW-Authenticate": auth_service.ENROLLMENT_SECRET_HEADER},
+    )
+
+
 def require_identity_match(authenticated: str, claimed: str) -> None:
     """
     Verifică faptul că agentul autentificat este chiar cel numit în cerere.

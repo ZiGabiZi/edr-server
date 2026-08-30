@@ -4,7 +4,7 @@ from pathlib import Path
 
 from fastapi import FastAPI
 
-from app.routes import agents, events, heartbeat, metrics
+from app.routes import agents, events, heartbeat, metrics, runs
 from app.wire_middleware import install_wire_accounting
 
 
@@ -78,3 +78,4 @@ app.include_router(agents.router)
 app.include_router(events.router)
 app.include_router(heartbeat.router)
 app.include_router(metrics.router)
+app.include_router(runs.router)
