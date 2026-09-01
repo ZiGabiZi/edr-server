@@ -358,3 +358,66 @@ def test_an_unindexed_source_is_refused_before_the_first_row(tmp_path, depozit):
 
     assert "CREATE INDEX" in str(eroare.value)
     assert _numara(depozit) == 0
+
+
+def test_the_real_nist_schema_is_accepted(tmp_path, depozit):
+    """
+    Schema declarata de NIST pentru editia 2026.03.1, reprodusa exact.
+
+    Doua lucruri se verifica aici, si amandoua ar fi costat ore daca erau gresite:
+
+    Intai, indexul. FILE nu are un CREATE INDEX explicit, dar are o cheie primara
+    compusa care INCEPE cu sha256, iar SQLite ii ataseaza un autoindex. Garda
+    trebuie sa-l recunoasca; altfel ar cere un CREATE INDEX inutil peste 432 de
+    milioane de randuri.
+
+    Apoi, vederea DISTINCT_HASH. Pare sursa ideala - exact hash-urile distincte -
+    dar e definita ca SELECT DISTINCT peste tot tabelul FILE, deci SQLite ar
+    materializa-o o data ca sa o numere si o data ca sa o citeasca. Descoperirea
+    trebuie sa aleaga tabelul, nu vederea.
+    """
+    cale = tmp_path / "nist.db"
+    connection = sqlite3.connect(str(cale))
+    connection.executescript(
+        """
+        CREATE TABLE FILE (
+         sha256     VARCHAR NOT NULL,
+         sha1       VARCHAR NOT NULL,
+         md5        VARCHAR NOT NULL,
+         crc32      VARCHAR NOT NULL,
+         file_name  VARCHAR NOT NULL,
+         file_size  INTEGER NOT NULL,
+         package_id INTEGER NOT NULL,
+         CONSTRAINT PK_FILE__FILE PRIMARY KEY
+            (sha256, sha1, md5, crc32, file_name, file_size, package_id)
+        );
+        CREATE TABLE MFG (
+         manufacturer_id INTEGER NOT NULL,
+         name            VARCHAR NOT NULL,
+         CONSTRAINT PK_MFG__MFG_ID PRIMARY KEY (manufacturer_id)
+        );
+        CREATE VIEW DISTINCT_HASH AS
+         SELECT DISTINCT sha256, sha1, md5, crc32 FROM FILE;
+        """
+    )
+    # Acelasi hash de doua ori, sub nume diferite: exact forma reala, unde 432
+    # de milioane de randuri poarta 72 de milioane de amprente distincte.
+    connection.executemany(
+        "INSERT INTO FILE VALUES (?, 'a', 'b', 'c', ?, 1, 1)",
+        [(HASHES[0].hex().upper(), "prima.dll"),
+         (HASHES[0].hex().upper(), "a-doua.dll"),
+         (HASHES[1].hex().upper(), "alta.dll")],
+    )
+    connection.commit()
+    connection.close()
+
+    source = sqlite3.connect(str(cale))
+    tabel, coloana = rds.discover_file_table(source)
+
+    assert tabel == "FILE"
+    assert rds.source_is_indexed(source, tabel, coloana) is True
+
+    source.close()
+
+    # Duplicatele se pliaza intr-un singur rand, prin cheia primara a depozitului.
+    assert rds.import_rds(cale, depozit, "2026.03.1") == 2

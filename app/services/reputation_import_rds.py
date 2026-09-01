@@ -96,9 +96,16 @@ def discover_file_table(source: sqlite3.Connection) -> Tuple[str, str]:
     """
     candidati: List[Tuple[str, str]] = []
 
+    # DOAR tabele, niciodata vederi. RDSv3 publica o vedere DISTINCT_HASH,
+    # definita ca SELECT DISTINCT sha256, ... FROM FILE. Ar parea sursa ideala —
+    # exact hash-urile distincte — dar SQLite ar trebui sa materializeze un
+    # DISTINCT peste 432 de milioane de randuri, o data ca sa o numere si o data
+    # ca sa o citeasca. Tabelul FILE, citit in ordinea cheii primare, da acelasi
+    # rezultat prin UPSERT si costa o singura parcurgere.
     tabele = [
         nume for (nume,) in source.execute(
-            "SELECT name FROM sqlite_master WHERE type IN ('table', 'view')"
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name NOT LIKE 'sqlite_%'"
         )
     ]
 
@@ -118,6 +125,12 @@ def discover_file_table(source: sqlite3.Connection) -> Tuple[str, str]:
             "No table with a sha256 column was found in the RDS source. "
             "Check that the file is an RDSv3 SQLite database, not the zip."
         )
+
+    # Un singur candidat: nu se numara nimic. COUNT(*) peste 432 de milioane de
+    # randuri e o parcurgere completa, adica minute bune platite doar ca sa
+    # confirmam ce stim deja.
+    if len(candidati) == 1:
+        return candidati[0]
 
     def numara(pereche: Tuple[str, str]) -> int:
         try:
