@@ -266,6 +266,13 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="Sigileaza o baza de lucru deja importata, in loc sa construiasca una goala.",
     )
+    parser.add_argument(
+        "--amprenta-continut",
+        action="store_true",
+        help="Calculeaza si amprenta de continut. E o scanare completa peste toate "
+             "randurile, deci minute la scara RDS; nu e nevoie de ea la fiecare "
+             "sigilare, ci doar cand vrei sa dovedesti ca un import e idempotent.",
+    )
 
     argumente = parser.parse_args(argv)
 
@@ -279,11 +286,28 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             connection = sqlite3.connect(str(lucru))
 
             try:
-                # Amprenta de continut se calculeaza INAINTE de sigilare, pe baza
-                # de lucru: dupa VACUUM INTO ar fi aceeasi, dar drumul pana la ea
-                # ar trece printr-o a doua deschidere a unui fisier de gigaocteti.
-                continut = content_fingerprint(connection)
+                # Amprenta de continut NU se calculeaza implicit. E o scanare
+                # completa peste toate randurile, hashuite unul cate unul in
+                # Python — la 72 de milioane de randuri, cea mai lenta operatiune
+                # din tot lantul. Rolul ei e sa dovedeasca faptul ca un import e
+                # idempotent, ceea ce se verifica atunci cand vrei, nu la fiecare
+                # sigilare. Langa o cifra merge amprenta FISIERULUI (METRICS.md 8),
+                # care se calculeaza oricum.
+                #
+                # Se calculeaza pe baza de lucru, inainte de VACUUM INTO: dupa,
+                # ar fi aceeasi valoare, dar drumul pana la ea ar cere o a doua
+                # deschidere a unui fisier de gigaocteti.
+                continut = None
+
+                if argumente.amprenta_continut:
+                    print("calculez amprenta de continut; scanare completa, "
+                          "dureaza minute...", flush=True)
+                    continut = content_fingerprint(connection)
+
+                print("numar randurile; tot o scanare completa...", flush=True)
                 randuri, surse = _inventar(connection)
+
+                print("sigilez cu VACUUM INTO...", flush=True)
                 amprenta = seal(connection, Path(argumente.iesire))
             finally:
                 connection.close()

@@ -316,6 +316,16 @@ def import_rds(
 
         # Contorul se NUMARA, nu se incrementeaza: trebuie sa descrie depozitul,
         # nu de cate ori a fost reluat importul.
+        #
+        # Numaratoarea e o scanare completa, fiindca nu exista index pe axe -
+        # scos deliberat la P2.2.4, unde am masurat ca ar costa 39,5 octeti pe
+        # rand ca sa economiseasca minute intr-o raportare rulata o data.
+        # Factura se plateste aici, cateva minute, o singura data. Se anunta,
+        # fiindca altfel ultimul pas al unui import de ore arata ca o blocare.
+        if progress:
+            progress("numar randurile pentru sources.row_count; "
+                     "e o scanare completa, dureaza cateva minute...")
+
         (total,) = target.execute(
             "SELECT COUNT(*) FROM reputation WHERE known_software = 1"
         ).fetchone()
