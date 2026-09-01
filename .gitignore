@@ -9,6 +9,14 @@ __pycache__/
 # necomise in fisierul principal, deci nu e un temporar oarecare.
 *.db-wal
 *.db-shm
+
+# Baza de lucru a instantaneului de reputatie. Nu e <ceva>.db, deci *.db
+# nu o prinde: reputation_build.py o numeste <iesire>.build si o sterge
+# singur la final. Ramane pe disc doar daca importul e omorat la mijloc,
+# iar atunci sunt zeci de GB pe care nimeni nu vrea sa-i vada in git add -A.
+*.build
+*.build-wal
+*.build-shm
 *.log
 logs/
 *.swp
