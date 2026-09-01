@@ -28,6 +28,18 @@ import app.services.reputation_store as reputation_store
 TEST_HASH = bytes(range(32))
 OTHER_HASH = bytes(range(32, 64))
 
+RDS = "NSRL RDS"
+BAZAAR = "MalwareBazaar"
+
+
+def sid(connection, name):
+    """Identificatorul unei surse consemnate. Cheia straina cere intregul, nu numele."""
+    (source_id,) = connection.execute(
+        "SELECT source_id FROM sources WHERE name = ?", (name,)
+    ).fetchone()
+
+    return source_id
+
 
 @pytest.fixture
 def snapshot(tmp_path, monkeypatch):
@@ -50,8 +62,17 @@ def snapshot(tmp_path, monkeypatch):
 
 @pytest.fixture
 def working(tmp_path):
-    """Baza de lucru, nesigilată — singurul loc unde scrierea e permisă."""
+    """
+    Baza de lucru, nesigilată — singurul loc unde scrierea e permisă.
+
+    Vine cu cele două surse deja consemnate. Fără ele, orice inserare ar cădea
+    pe cheia străină, iar testele de mai jos ar trece din alt motiv decât cel pe
+    care îl numesc — cea mai inutilă formă de test verde.
+    """
     connection = reputation_build.create_working_database(tmp_path / "lucru.db")
+
+    reputation_build.record_source(connection, RDS, "software", "2026.03.1", 0)
+    reputation_build.record_source(connection, BAZAAR, "threat", "inventar-2026-08", 0)
 
     yield connection
 
@@ -71,8 +92,8 @@ def test_a_hex_hash_is_refused_by_the_schema(working):
     with pytest.raises(sqlite3.IntegrityError):
         working.execute(
             "INSERT INTO reputation (sha256, known_software, software_source) "
-            "VALUES (?, 1, 'RDS')",
-            (TEST_HASH.hex(),),
+            "VALUES (?, 1, ?)",
+            (TEST_HASH.hex(), sid(working, RDS)),
         )
 
 
@@ -100,9 +121,9 @@ def test_the_two_axes_are_independent(working):
         """
         INSERT INTO reputation
             (sha256, known_software, software_source, known_malicious, threat_source)
-        VALUES (?, 1, 'RDS', 1, 'MalwareBazaar')
+        VALUES (?, 1, ?, 1, ?)
         """,
-        (TEST_HASH,),
+        (TEST_HASH, sid(working, RDS), sid(working, BAZAAR)),
     )
 
     (software, amenintare) = working.execute(
@@ -130,8 +151,8 @@ def test_a_source_without_the_axis_is_refused(working):
     with pytest.raises(sqlite3.IntegrityError):
         working.execute(
             "INSERT INTO reputation (sha256, known_malicious, threat_source) "
-            "VALUES (?, 0, 'MalwareBazaar')",
-            (TEST_HASH,),
+            "VALUES (?, 0, ?)",
+            (TEST_HASH, sid(working, BAZAAR)),
         )
 
 
@@ -155,7 +176,7 @@ def test_a_write_fails_while_the_server_reads(snapshot):
     with pytest.raises(sqlite3.OperationalError):
         connection.execute(
             "INSERT INTO reputation (sha256, known_software, software_source) "
-            "VALUES (?, 1, 'RDS')",
+            "VALUES (?, 1, 1)",
             (TEST_HASH,),
         )
 

@@ -73,6 +73,7 @@ from app.services.reputation_store import (
     SCHEMA,
     SCHEMA_VERSION,
     ReputationStoreError,
+    content_fingerprint,
     fingerprint,
 )
 
@@ -100,6 +101,12 @@ def create_working_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
 
     connection = sqlite3.connect(str(path))
+
+    # SQLite ignoră cheile străine dacă nu i se cere altfel, iar tăcerea aia ar
+    # face din REFERENCES sources(source_id) un comentariu: un rând ar putea
+    # arăta spre o sursă inexistentă, deci o afirmație fără proveniență ar trece
+    # exact prin gaura pe care CHECK-urile o astupă în rest.
+    connection.execute("PRAGMA foreign_keys=ON")
 
     # WAL doar pentru import: aici se scriu zeci de milioane de rânduri, iar
     # jurnalul implicit face un fsync pe tranzacție. Modul ăsta NU ajunge în
@@ -135,9 +142,9 @@ def record_source(
     axis: str,
     version: str,
     row_count: int,
-) -> None:
+) -> int:
     """
-    Consemnează o sursă consultată, cu versiunea ei.
+    Consemnează o sursă consultată, cu versiunea ei. Întoarce identificatorul.
 
     Versiunea sursei e singura apărare împotriva unui adevăr neplăcut: amprenta
     acoperă fișierul livrat, nu procesul care l-a produs. Sursele externe se
@@ -151,14 +158,29 @@ def record_source(
             f"Unknown axis {axis!r}; expected {AXIS_SOFTWARE!r} or {AXIS_THREAT!r}."
         )
 
+    # UPSERT, nu INSERT OR REPLACE: al doilea ar ȘTERGE rândul și l-ar rescrie
+    # cu alt source_id, iar rândurile din `reputation` care trimit spre el ar
+    # rămâne agățate de un identificator care nu mai există. Un import reluat
+    # ar rupe tăcut proveniența a tot ce s-a scris înainte de întrerupere.
     connection.execute(
         """
-        INSERT OR REPLACE INTO sources (name, axis, version, imported_at, row_count)
+        INSERT INTO sources (name, axis, version, imported_at, row_count)
         VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (name) DO UPDATE SET
+            axis        = excluded.axis,
+            version     = excluded.version,
+            imported_at = excluded.imported_at,
+            row_count   = excluded.row_count
         """,
         (name, axis, version, _now(), row_count),
     )
     connection.commit()
+
+    (source_id,) = connection.execute(
+        "SELECT source_id FROM sources WHERE name = ?", (name,)
+    ).fetchone()
+
+    return source_id
 
 
 def seal(connection: sqlite3.Connection, destination: Path) -> str:
@@ -239,22 +261,72 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default=None,
         help="Baza de lucru intermediara. Implicit, <iesire>.build.",
     )
+    parser.add_argument(
+        "--sigileaza-din",
+        default=None,
+        help="Sigileaza o baza de lucru deja importata, in loc sa construiasca una goala.",
+    )
 
     argumente = parser.parse_args(argv)
 
     try:
-        amprenta = build_empty_snapshot(Path(argumente.iesire), argumente.lucru)
+        if argumente.sigileaza_din:
+            lucru = Path(argumente.sigileaza_din)
+
+            if not lucru.exists():
+                raise SnapshotBuildError(f"There is no working database at {lucru}.")
+
+            connection = sqlite3.connect(str(lucru))
+
+            try:
+                # Amprenta de continut se calculeaza INAINTE de sigilare, pe baza
+                # de lucru: dupa VACUUM INTO ar fi aceeasi, dar drumul pana la ea
+                # ar trece printr-o a doua deschidere a unui fisier de gigaocteti.
+                continut = content_fingerprint(connection)
+                randuri, surse = _inventar(connection)
+                amprenta = seal(connection, Path(argumente.iesire))
+            finally:
+                connection.close()
+        else:
+            amprenta = build_empty_snapshot(Path(argumente.iesire), argumente.lucru)
+            continut, randuri, surse = None, 0, []
     except (SnapshotBuildError, ReputationStoreError) as error:
         print(f"eroare: {error}", file=sys.stderr)
         return 1
 
+    marime = Path(argumente.iesire).stat().st_size
+
     print(f"instantaneu: {argumente.iesire}")
     print(f"schema:      versiunea {SCHEMA_VERSION}")
+    print(f"marime:      {marime / 1024 ** 3:.2f} GB")
+    print(f"randuri:     {randuri}")
     print(f"amprenta:    {amprenta}")
+
+    if continut:
+        print(f"continut:    {continut}")
+
+    for nume, axa, versiune, cate in surse:
+        print(f"  sursa:     {nume} ({axa}, {versiune}) - {cate} randuri")
+
     print()
-    print("Depozitul e gol. Importul e la P2.2.4 si P2.2.5.")
+
+    if randuri:
+        print("Amprenta si lista surselor se declara langa orice cifra (METRICS.md 8).")
+    else:
+        print("Depozitul e gol. Importul e la P2.2.4 si P2.2.5.")
 
     return 0
+
+
+def _inventar(connection: sqlite3.Connection):
+    """Cate randuri si ce surse, pentru raportul de la sfarsitul sigilarii."""
+    (randuri,) = connection.execute("SELECT COUNT(*) FROM reputation").fetchone()
+
+    surse = connection.execute(
+        "SELECT name, axis, version, row_count FROM sources ORDER BY axis, name"
+    ).fetchall()
+
+    return randuri, surse
 
 
 if __name__ == "__main__":

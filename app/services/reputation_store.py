@@ -128,21 +128,51 @@ AXIS_THREAT = "threat"
 
 
 SCHEMA = (
+    # Sursele, ÎNAINTEA tabelului principal: `reputation` trimite spre ele prin
+    # cheie străină, iar SQLite cere ca ținta să existe la creare.
+    #
+    # De ce sursa e un întreg și nu numele ei repetat pe fiecare rând: la 150 de
+    # milioane de rânduri, un nume de 18 caractere costă 2,5 GB de repetiție a
+    # aceluiași cuvânt. Măsurat, nu presupus — 82 de octeți pe rând cu întreg
+    # față de 100 cu text. Invarianta din intrarea de decizie, fiecare rând
+    # poartă sursa, rămâne intactă: se poartă prin referință, nu prin copie.
+    #
+    # `METRICS.md` 8 cere lista surselor lângă orice cifră, iar aici e singurul
+    # loc unde poate fi citită fără să fie reconstruită din memoria cuiva.
+    """
+    CREATE TABLE IF NOT EXISTS sources (
+        source_id   INTEGER NOT NULL PRIMARY KEY,
+        name        TEXT    NOT NULL UNIQUE,
+        axis        TEXT    NOT NULL,
+        version     TEXT    NOT NULL,
+        imported_at TEXT    NOT NULL,
+        row_count   INTEGER NOT NULL,
+
+        CHECK (axis IN ('software', 'threat')),
+        CHECK (row_count >= 0)
+    )
+    """,
     # Tabelul principal. WITHOUT ROWID: cheia primară E hash-ul, deci un rowid
     # separat ar fi un al doilea index peste aceleași date, plătit de zeci de
     # milioane de ori.
+    #
+    # NU există index pe cele două axe, deși raportul de acoperire de la P2.2.6
+    # le agregă. Măsurat, indexul acela costă 39,5 octeți pe rând — exact cât un
+    # rând întreg minimal, adică 5,5 GB la 150 de milioane de rânduri — ca să
+    # economisească minute într-o raportare rulată o dată. O scanare completă e
+    # plata corectă acolo.
     """
     CREATE TABLE IF NOT EXISTS reputation (
         sha256              BLOB    NOT NULL PRIMARY KEY,
 
         -- Axa de NOUTATE. „Îl știu ca software." RDS scrie doar aici.
         known_software      INTEGER NOT NULL DEFAULT 0,
-        software_source     TEXT,
+        software_source     INTEGER REFERENCES sources (source_id),
 
         -- Axa de AMENINȚARE. Independentă de prima; un fișier poate fi pe
         -- amândouă, iar celula aceea e chiar contorul de suprapunere.
         known_malicious     INTEGER NOT NULL DEFAULT 0,
-        threat_source       TEXT,
+        threat_source       INTEGER REFERENCES sources (source_id),
 
         -- Supra-import (decizia R2). Coloanele astea nu se folosesc azi.
         -- Costul unei coloane nefolosite e spațiu; costul unei coloane lipsă e
@@ -167,28 +197,6 @@ SCHEMA = (
         CHECK ((known_software  = 1) = (software_source IS NOT NULL)),
         CHECK ((known_malicious = 1) = (threat_source   IS NOT NULL))
     ) WITHOUT ROWID
-    """,
-    # Indexul pe cele două axe. Servește raportul de acoperire de la P2.2.6:
-    # contorul de suprapunere și fracțiunile per strat sunt agregări peste
-    # perechea asta, nu căutări după hash.
-    """
-    CREATE INDEX IF NOT EXISTS idx_reputation_axes
-        ON reputation (known_software, known_malicious)
-    """,
-    # Sursele consultate. `METRICS.md` §8 cere lista lor lângă orice cifră, iar
-    # aici e singurul loc unde poate fi citită fără să fie reconstruită din
-    # memoria cuiva.
-    """
-    CREATE TABLE IF NOT EXISTS sources (
-        name        TEXT    NOT NULL PRIMARY KEY,
-        axis        TEXT    NOT NULL,
-        version     TEXT    NOT NULL,
-        imported_at TEXT    NOT NULL,
-        row_count   INTEGER NOT NULL,
-
-        CHECK (axis IN ('software', 'threat')),
-        CHECK (row_count >= 0)
-    )
     """,
     # Identitatea instantaneului. Versiunea schemei stă aici, nu într-un nume de
     # fișier: numele se schimbă la copiere, conținutul nu.
@@ -276,6 +284,64 @@ def fingerprint(path: str) -> str:
         raise ReputationStoreError(
             f"Could not fingerprint the reputation snapshot at {path}: {error}"
         ) from error
+
+    return digest.hexdigest()
+
+
+def content_fingerprint(connection: sqlite3.Connection) -> str:
+    """
+    Amprentă peste CONȚINUTUL logic, nu peste octeții fișierului.
+
+    De ce sunt necesare amândouă, și de ce am aflat-o dintr-un test roșu:
+        `fingerprint()` acoperă fișierul livrat și răspunde la întrebarea „ce a
+        citit serverul când a produs cifra asta". E identitatea, și e verificabilă
+        din afară cu sha256sum.
+
+        Dar fișierul conține și momentul construirii, și momentul importului.
+        Două importuri identice, rulate la ore diferite, produc fișiere diferite
+        la octet — deci `fingerprint()` NU poate demonstra că un import e
+        idempotent, și nici că altcineva a reconstruit același lucru.
+
+        Funcția asta răspunde la cealaltă întrebare: „ce e ÎNĂUNTRU". Trece peste
+        rânduri în ordinea hash-ului și peste surse în ordinea numelui, sărind
+        peste tot ce e ceas: `built_at`, `imported_at`, cursorul de reluare.
+        Două depozite cu același conținut dau aceeași valoare oricând ar fi fost
+        construite.
+
+        Criteriul de ieșire din P2.2.4 — reimportul aceleiași surse nu schimbă
+        nimic — se verifică aici. Criteriul din `METRICS.md` 8 — ce se declară
+        lângă o cifră — se verifică cu `fingerprint()`. Erau două întrebări
+        diferite sub același nume.
+
+    Costă o scanare completă a tabelului, deci se cere explicit, nu la fiecare
+    deschidere.
+    """
+    digest = hashlib.sha256()
+    digest.update(b"reputation-content-v1\n")
+    digest.update(("schema=%d\n" % SCHEMA_VERSION).encode("utf-8"))
+
+    for nume, axa, versiune, randuri in connection.execute(
+        "SELECT name, axis, version, row_count FROM sources ORDER BY name"
+    ):
+        digest.update(
+            ("sursa\t%s\t%s\t%s\t%d\n" % (nume, axa, versiune, randuri)).encode("utf-8")
+        )
+
+    for rand in connection.execute(
+        """
+        SELECT r.sha256, r.known_software, sw.name, r.known_malicious, th.name,
+               r.family, r.first_seen, r.representative_name, r.name_count
+          FROM reputation r
+          LEFT JOIN sources sw ON sw.source_id = r.software_source
+          LEFT JOIN sources th ON th.source_id = r.threat_source
+         ORDER BY r.sha256
+        """
+    ):
+        digest.update(rand[0])
+        digest.update(
+            ("\t%s\n" % "\t".join("" if c is None else str(c) for c in rand[1:]))
+            .encode("utf-8")
+        )
 
     return digest.hexdigest()
 
@@ -377,13 +443,19 @@ def lookup(sha256: bytes) -> Knowledge:
     with _lock:
         connection = _connection_locked()
 
+        # Cele două LEFT JOIN întorc sursa ca NUME, deși e stocată ca întreg.
+        # Apelantul n-are ce face cu un identificator intern, iar tabelul
+        # `sources` are o mână de rânduri — costul e o căutare în cache, nu o
+        # citire de disc.
         rand = connection.execute(
             """
-            SELECT known_software, software_source,
-                   known_malicious, threat_source,
-                   family, first_seen
-              FROM reputation
-             WHERE sha256 = ?
+            SELECT r.known_software, sw.name,
+                   r.known_malicious, th.name,
+                   r.family, r.first_seen
+              FROM reputation r
+              LEFT JOIN sources sw ON sw.source_id = r.software_source
+              LEFT JOIN sources th ON th.source_id = r.threat_source
+             WHERE r.sha256 = ?
             """,
             (bytes(sha256),),
         ).fetchone()
