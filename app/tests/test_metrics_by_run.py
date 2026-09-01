@@ -20,6 +20,8 @@ Cazurile păzite aici:
     5. numărătorul MĂSURAT nu se lipește pe o rulare pe care procesul n-a văzut-o.
 """
 
+import hashlib
+
 import app.services.event_store as event_store
 import app.services.measurement_run as measurement_run
 from app.wire_middleware import WIRE_INSTANCE_HEADER
@@ -45,7 +47,10 @@ def _post_file_event(client, agent_id: str, client_event_id: str, file_size: int
             "event_type": "file_created",
             "client_event_id": client_event_id,
             "file_path": f"C:/tmp/{client_event_id}.txt",
-            "sha256": client_event_id.ljust(64, "0"),
+            # Hash derivat din id, nu id-ul completat cu zerouri: de la v7,
+            # sha256 trebuie sa fie hexazecimal valid, iar 'evt-a' nu e. Rămâne
+            # la fel de distinct per eveniment și la fel de reproductibil.
+            "sha256": hashlib.sha256(client_event_id.encode("utf-8")).hexdigest(),
             "hash_status": "ok",
             "file_size": file_size,
             "disclosure": {"tier": "T0", "content_bytes": 0},

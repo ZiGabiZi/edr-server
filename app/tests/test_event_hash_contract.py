@@ -53,6 +53,88 @@ def test_unknown_hash_status_is_rejected():
         EventCreateRequest(**_base(hash_status="cine_stie"))
 
 
+def test_sha256_that_is_not_hexadecimal_is_rejected():
+    """Hex rupt e minciuna de contract, nu incertitudine — aia e hash_status."""
+    with pytest.raises(ValidationError, match="nu e hexazecimal"):
+        EventCreateRequest(**_base(hash_status="ok", sha256="z" * 64, file_size=1))
+
+
+@pytest.mark.parametrize("lungime", [63, 65])
+def test_sha256_of_the_wrong_length_is_rejected(lungime):
+    with pytest.raises(ValidationError, match="nu e hexazecimal"):
+        EventCreateRequest(
+            **_base(hash_status="ok", sha256="a" * lungime, file_size=1)
+        )
+
+
+def test_sha256_with_whitespace_is_rejected_although_fromhex_would_accept_it():
+    """
+    Capcana pentru care verificarea NU se face cu bytes.fromhex.
+
+    Metoda ignora spatiile albe ASCII: sirul de mai jos are 65 de caractere, dar
+    fromhex il decodeaza fara sa se planga in 32 de octeti perfect valizi. O
+    validare scrisa ca `try: bytes.fromhex(...) except ValueError:` ar fi trecut
+    pe verde exact pe un builder care concateneaza gresit, iar depozitul ar fi
+    fost consultat cu alt hash decat al fisierului.
+
+    Prima aserțiune fixeaza premisa: daca o versiune viitoare de Python ar
+    inceta sa ignore spatiile, testul ar trebui rescris, nu sters.
+    """
+    cu_spatiu = " " + "a" * 64
+
+    assert len(bytes.fromhex(cu_spatiu)) == 32, (
+        "bytes.fromhex nu mai ignora spatiile albe; comentariul din schema si "
+        "testul asta descriu o capcana care nu mai exista."
+    )
+
+    with pytest.raises(ValidationError, match="nu e hexazecimal"):
+        EventCreateRequest(**_base(hash_status="ok", sha256=cu_spatiu, file_size=1))
+
+
+def test_uppercase_sha256_is_canonicalised_instead_of_rejected():
+    """
+    Majusculele sunt acelasi hash scris altfel, nu o eroare: un 422 ar sterge
+    din spool un eveniment perfect corect. Se accepta si se coboara la
+    minuscule, fiindca sirul se si STOCHEAZA, iar prevalenta se numara pe
+    hash-uri distincte — doua scrieri ale aceluiasi hash ar fi doua fisiere
+    in cifra aia, fara nicio eroare vizibila.
+    """
+    event = EventCreateRequest(
+        **_base(hash_status="ok", sha256="A" * 64, file_size=1024)
+    )
+
+    assert event.sha256 == "a" * 64
+
+
+def test_the_route_answers_invalid_hex_with_422_and_stores_nothing(
+    client, registered_agent_id
+):
+    """
+    Codul de raspuns conteaza, si e ales dupa ce face agentul cu el: 4xx e
+    definitiv, deci EventDispatcher scoate evenimentul din spool. Aici e
+    comportamentul dorit — un hex rupt nu se repara prin reincercare, iar
+    alternativa ar fi fost o retransmisie la nesfarsit a aceleiasi minciuni.
+
+    Si nimic nu se persista: un eveniment cu hash imposibil de decodat ar fi
+    intrat in numitorul metricii de divulgare fara sa poata fi vreodata cautat
+    in depozitul de reputatie.
+    """
+    raspuns = client.post(
+        "/api/events",
+        json={
+            "agent_id": registered_agent_id,
+            "event_type": "file_created",
+            "file_path": "C:\\x.exe",
+            "sha256": "nu-e-un-hash",
+            "hash_status": "ok",
+            "file_size": 10,
+        },
+    )
+
+    assert raspuns.status_code == 422, raspuns.text
+    assert client.get("/api/events").json()["count"] == 0
+
+
 @pytest.mark.parametrize(
     "status",
     [

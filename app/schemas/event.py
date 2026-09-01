@@ -32,6 +32,18 @@ VALID_HASH_STATUSES = frozenset(
 )
 
 
+# Forma unui sha256 pe fir: exact 64 de caractere hexazecimale.
+#
+# De ce lungimea se verifica pe SIR si alfabetul explicit, in loc sa se incerce
+# pur si simplu bytes.fromhex: metoda aceea IGNORA spatiile albe ASCII. Un sir
+# de 66 de caractere cu doua spatii inauntru se decodeaza fara sa se planga in
+# 32 de octeti perfect valizi, deci un hash rupt de un builder care concateneaza
+# gresit ar trece de granita si ar consulta depozitul cu alt hash decat cel al
+# fisierului. Lungimea sirului e singurul loc in care greseala aia se vede.
+SHA256_HEX_LENGTH = 64
+_HEX_DIGITS = frozenset("0123456789abcdefABCDEF")
+
+
 class EventMeasurements(WireModel):
     """
     Costul observatiei, nu al obiectului observat.
@@ -189,6 +201,41 @@ class EventCreateRequest(WireModel):
                 "numaratorul metricii de octeti divulgati vs. always-upload, "
                 "si nu se poate reconstrui retroactiv daca fisierul se schimba."
             )
+
+        # Forma hash-ului (v7). Se verifica AICI, nu in ruta si nu in serviciul
+        # care consulta reputatia: un singur loc decide ce e un sha256 valid,
+        # iar locul ala e langa invarianta care spune cand are voie sa existe.
+        #
+        # 422 e raspunsul corect, si nu deschide o clasa noua de esec: campul
+        # producea deja 422 prin bicondiționalitatea de mai sus. Rezerva
+        # poison-message din docstring nu se aplica — acolo agentul curent omitea
+        # legitim un camp, aici niciun agent corect nu poate emite hex invalid.
+        # Un hex rupt e o minciuna de contract, nu incertitudine; incertitudinea
+        # are deja vocabular propriu, in hash_status.
+        if has_hash:
+            hexa = self.sha256
+
+            if len(hexa) != SHA256_HEX_LENGTH or not set(hexa) <= _HEX_DIGITS:
+                raise ValueError(
+                    f"sha256 nu e hexazecimal de {SHA256_HEX_LENGTH} de "
+                    f"caractere: {hexa!r} ({len(hexa)} caractere). Depozitul de "
+                    f"reputatie primeste 32 de octeti bruti, decodati din sirul "
+                    f"asta o singura data, la granita — un sir care nu se poate "
+                    f"decoda ar consulta depozitul cu alt hash decat al "
+                    f"fisierului, sau deloc."
+                )
+
+            # Canonicalizare la granita, nu toleranta ascunsa.
+            #
+            # Majusculele sunt acelasi sha256 scris altfel, nu o eroare: un 422
+            # aici ar sterge din spool un eveniment perfect corect, ceea ce e
+            # exact costul refuzat la v3 si v5. Dar sirul se si STOCHEAZA asa cum
+            # a venit, iar prevalenta se numara pe hash-uri DISTINCTE — doua
+            # scrieri ale aceluiasi hash ar deveni doua fisiere in cifra aia,
+            # fara nicio eroare vizibila. Depozitul de reputatie a inchis exact
+            # gaura asta stocand 32 de octeti bruti in loc de text; aici, unde
+            # textul ramane text, canonicalizarea face aceeasi treaba.
+            self.sha256 = hexa.lower()
 
         return self
 
