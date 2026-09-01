@@ -8,6 +8,8 @@ ce *supraviețuiește* validării și ajunge efectiv în store — cele două î
 """
 
 import app.services.agent_service as agent_service
+import app.services.event_service as event_service
+from app.schemas.event import EventResponse
 
 
 OCCURRED_AT = "2026-08-05T10:00:00+00:00"
@@ -155,3 +157,40 @@ def test_restart_event_carries_the_incarnation_it_detected(client, registered_ag
     assert len(restart) == 1
     assert restart[0]["agent_instance_id"] == "inst-B"
     assert restart[0]["occurred_at"]
+
+
+def test_event_response_declares_every_stored_field(client, registered_agent_id):
+    """
+    Modelul de răspuns FILTREAZĂ ce nu declară; nu completează ce lipsește.
+
+    Un câmp adăugat evenimentului stocat și uitat în `EventResponse` dispare de pe
+    fir fără nicio eroare — exact clasa de bug pentru care există contractul, doar
+    pe direcția pe care `WireModel` n-o acoperă, fiindcă acolo emitentul e chiar
+    serverul. `run_id` era deja în situația asta: trimis de rută de la 1.4.2
+    încoace, absent din model cât timp modelul era cod mort, deci adoptarea lui la
+    contract_version 6 l-ar fi șters de pe fir în commit-ul care promitea că nu
+    schimbă nimic.
+
+    Se verifică în două locuri, nu într-unul: ce ține depozitul și ce iese efectiv
+    pe fir. Prima verificare singură ar trece și dacă ruta ar filtra câmpuri la
+    ieșire; a doua singură ar trece și dacă modelul ar declara un câmp pe care
+    nimeni nu-l stochează.
+    """
+    response = _post_startup_event(client, registered_agent_id)
+    assert response.status_code == 200, response.text
+
+    declarate = set(EventResponse.model_fields)
+    stocate = set(event_service.get_all_events()[-1])
+    pe_fir = set(response.json()["event"])
+
+    assert stocate == declarate, (
+        f"Evenimentul stocat și modelul de răspuns nu mai descriu același lucru. "
+        f"Stocate și nedeclarate (dispar tăcut de pe fir): "
+        f"{sorted(stocate - declarate)}. Declarate și nestocate (răspunsul le-ar "
+        f"cere și n-ar avea de unde): {sorted(declarate - stocate)}."
+    )
+
+    assert pe_fir == declarate, (
+        f"Răspunsul de pe fir nu poartă exact câmpurile declarate: lipsă "
+        f"{sorted(declarate - pe_fir)}, în plus {sorted(pe_fir - declarate)}."
+    )

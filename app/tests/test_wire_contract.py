@@ -29,8 +29,10 @@ import pytest
 from app.schemas.agent import AgentRegisterRequest
 from app.schemas.event import (
     EventCreateRequest,
+    EventCreateResponse,
     EventDisclosure,
     EventMeasurements,
+    EventResponse,
 )
 from app.schemas.heartbeat import HeartbeatDirective, HeartbeatRequest, HeartbeatResponse
 
@@ -92,11 +94,13 @@ PEER_REQUIRED_ENV_VAR = "EDR_REQUIRE_PEER_REPO"
 CONTRACT_MODELS = {
     "agent_register_request": AgentRegisterRequest,
     "event_create_request": EventCreateRequest,
+    "event_create_response": EventCreateResponse,
     "heartbeat_request": HeartbeatRequest,
     "heartbeat_response": HeartbeatResponse,
     "heartbeat_directive": HeartbeatDirective,
     "event_measurements": EventMeasurements,
     "event_disclosure": EventDisclosure,
+    "event_response": EventResponse,
 }
 
 

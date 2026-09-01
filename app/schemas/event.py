@@ -194,11 +194,32 @@ class EventCreateRequest(WireModel):
 
 
 class EventResponse(BaseModel):
-    event_id: int
-    client_event_id: Optional[str] = None
+    """
+    Evenimentul stocat, asa cum pleaca inapoi spre agent.
+
+    Nu mosteneste WireModel, si asta nu e o scapare: aici serverul e EMITENTUL,
+    iar un camp in plus e o alegere a noastra, nu o surpriza venita de pe retea
+    (vezi app/schemas/wire.py). Ce apara WireModel — cheia nedeclarata care intra
+    tacut — nu exista pe directia asta.
+
+    `run_id` a fost adaugat la contract_version 6, nu inventat atunci: ruta il
+    trimitea de la 1.4.2 incoace, iar modelul nu-l declara. Cat timp modelul era
+    cod mort, absenta n-a costat nimic. Adoptat fara el, ar fi STERS campul de pe
+    fir — un model de raspuns filtreaza, nu completeaza. Golul e pazit acum de
+    test_event_contract.py::test_event_response_declares_every_stored_field.
+
+    Ordinea campurilor o repeta pe cea a dictionarului construit in
+    event_service.create_event, cu `event_id` la urma din exact motivul pentru
+    care event_store._row_to_event il pune acolo: ordinea cheilor nu schimba
+    nicio cifra, dar schimba diff-ul oricarui raspuns comparat cu unul vechi.
+    Commit-ul care a adoptat modelul promite ca niciun octet de pe fir nu se
+    schimba; promisiunea e verificabila doar daca ordinea se pastreaza.
+    """
+
     agent_id: str
     agent_instance_id: Optional[str] = None
     event_type: str
+    client_event_id: Optional[str] = None
     file_path: Optional[str] = None
     sha256: Optional[str] = None
     hash_status: Optional[str] = None
@@ -208,4 +229,34 @@ class EventResponse(BaseModel):
     description: Optional[str] = None
     occurred_at: Optional[str] = None
     received_at: Optional[str] = None
+    run_id: str
     status: str
+    event_id: int
+
+
+class EventCreateResponse(BaseModel):
+    """
+    Raspunsul la POST /api/events. Prima declarare a directiei descendente.
+
+    Pana la contract_version 6, ruta intorcea un dictionar construit pe loc:
+    `next_action` era un camp de fir pe care niciun contract nu-l cunostea, iar
+    EventResponse era cod mort. Directia server -> agent nu are echivalent de
+    WireModel — agentul citeste raspunsul cu dict.get(), deci un camp redenumit
+    pe server nu produce nicio eroare, ci un None ignorat. E aceeasi gaura pe
+    care contractul o descrie la heartbeat_response, doar ca acolo exista macar
+    un contract deasupra.
+
+    Se declara ACUM, inainte sa poarte ceva: P2.3 pune aici dispozitia de treapta
+    produsa de depozitul de reputatie. Un canal care capata primul mecanism
+    vizibil al protocolului inainte de contract e un canal in care redenumirea se
+    descopera in celalalt repo, peste luni.
+
+    `next_action` ramane "none" si ramane o DIRECTIVA — ce trebuie facut. Ce vine
+    la P2.3 e o DISPOZITIE — ce se stie la adancimea T0. Confundate, ar exista
+    doua mecanisme de decizie in acelasi raspuns, iar banda de incertitudine
+    (§L2.7) ar fi contrazisa pe tacute de un camp care nu-i apartine.
+    """
+
+    message: str
+    event: EventResponse
+    next_action: str
