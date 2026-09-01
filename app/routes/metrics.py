@@ -3,8 +3,9 @@ from typing import Optional
 from fastapi import APIRouter, Query
 
 from app.routes.scope import RunScope, RunScopeDependency
-from app.services import event_service, wire_accounting
+from app.services import event_service, event_store, wire_accounting
 from app.services.disclosure_metrics import compute_disclosure_metrics
+from app.services.reputation_metrics import compute_reputation_metrics
 
 
 router = APIRouter(
@@ -178,6 +179,19 @@ def disclosure_metrics(
     # o discrepanță agent-server e o proprietate a transportului dintre două
     # porniri, nu a experimentului care se întâmpla atunci.
     metrics["reconciliation"] = wire_accounting.reconciliation(agent_id=agent_id)
+
+    # Distribuția dispozițiilor, compusă tot AICI și din același motiv ca
+    # reconcilierea: funcția care o calculează e pură, iar instantaneele
+    # consemnate se citesc din depozit, care e stare.
+    #
+    # Secțiune proprie, nu un rând în `by_tier`. Cele două tabele au numitori
+    # diferiți — ce a divulgat agentul față de ce a conchis serverul — iar
+    # contopite, procentele s-ar aduna peste mulțimi diferite. Vezi
+    # reputation_metrics pentru argumentul întreg.
+    metrics["reputation"] = compute_reputation_metrics(
+        events,
+        event_store.run_snapshots(None if scope.covers_all_runs else scope.run_id),
+    )
 
     # Declarația de corpus stă PRIMA în răspuns, nu ultima. Cine deschide
     # rezultatul trebuie să vadă despre ce experiment e înainte să vadă cifrele;

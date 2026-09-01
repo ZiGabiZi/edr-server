@@ -1,10 +1,13 @@
 import logging
+from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from fastapi import FastAPI
 
 from app.routes import agents, events, heartbeat, metrics, runs
+from app.services import reputation_store
+from app.services.reputation_disposition import REPUTATION_UNAVAILABLE
 from app.wire_middleware import install_wire_accounting
 
 
@@ -52,10 +55,70 @@ logging.basicConfig(
     ],
 )
 
+logger = logging.getLogger(__name__)
+
+
+def warm_reputation_snapshot() -> None:
+    """
+    Deschide și amprentează instantaneul de reputație ÎNAINTE de primul eveniment.
+
+    De ce la pornire și nu la prima nevoie, cum era:
+        Amprenta e SHA-256 peste tot fișierul livrat — 3,28 GB azi, deci 8,3
+        secunde măsurate. Calculată leneș, cădea pe calea de ingestie, adică pe
+        PRIMUL eveniment cu hash al fiecărei porniri de server. Timeout-ul
+        agentului e de 5 secunde (`edr-agent/services/transport.py`), deci acel
+        prim eveniment expira garantat, de fiecare dată.
+
+        Nu se pierdea nimic — un timeout nu e 4xx, deci coada îl reia și a doua
+        încercare durează 8 ms. Dar prețul se plătea în altă parte: contabilizarea
+        de fir numără FIECARE plecare, iar cererea expirată ajunsese deja la
+        server și fusese cântărită. Fiecare pornire injecta deci o retransmisie
+        în numărătorul măsurat al afirmației principale — mică, sistematică și
+        produsă de noi, nu de rețea.
+
+        Mutată aici, secundele se plătesc unde nu așteaptă nimeni: serverul spune
+        „startup complete" mai târziu, iar prima cerere e la fel de rapidă ca a
+        doua.
+
+    Absența instantaneului NU oprește pornirea. Un server fără depozit e un
+    server care răspunde `reputation_unavailable` — stare declarată, nu defect —
+    iar telemetria trebuie să curgă și atunci. Cuplarea inversă e chiar decizia
+    refuzată la F4.
+    """
+    try:
+        identitate = reputation_store.snapshot_identity()
+    except reputation_store.ReputationStoreError as error:
+        logger.warning(
+            "No reputation snapshot could be opened at startup (%s). Events "
+            "carrying a hash will be answered '%s' until one is in place.",
+            error,
+            REPUTATION_UNAVAILABLE,
+        )
+        return
+
+    logger.info(
+        "Reputation snapshot ready: fingerprint %s, built %s, sources %s.",
+        identitate["fingerprint"][:16],
+        identitate["built_at"],
+        ", ".join(
+            f"{s['name']}@{s['version']} ({s['row_count']} rows)"
+            for s in identitate["sources"]
+        )
+        or "none",
+    )
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    warm_reputation_snapshot()
+    yield
+
+
 app = FastAPI(
     title="EDR Server",
     description="Backend minimal pentru sistemul EDR",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 

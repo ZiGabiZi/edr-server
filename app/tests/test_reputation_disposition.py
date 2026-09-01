@@ -306,6 +306,178 @@ def test_a_retransmission_keeps_the_disposition_of_the_first_arrival(
     )
 
 
+# ── Cifra publicată ──────────────────────────────────────────────────────────
+
+def _metrica(client):
+    raspuns = client.get("/api/metrics/disclosure")
+    assert raspuns.status_code == 200, raspuns.text
+    return raspuns.json()["reputation"]
+
+
+def test_the_published_figure_counts_the_cells_and_declares_the_snapshot(
+    client, registered_agent_id, instantaneu
+):
+    """
+    Criteriul de ieșire, jumătatea care se poate interoga: dispoziția e
+    numărabilă per rulare, lângă amprenta instantaneului care a răspuns
+    (`METRICS.md` §8).
+    """
+    _eveniment(client, registered_agent_id, MALICIOS.hex(), "evt-1")
+    _eveniment(client, registered_agent_id, SOFTWARE.hex(), "evt-2")
+    _eveniment(client, registered_agent_id, AMBELE.hex(), "evt-3")
+    _eveniment(client, registered_agent_id, ABSENT.hex(), "evt-4")
+
+    reputatie = _metrica(client)
+
+    assert reputatie["events_with_hash"] == 4
+    assert reputatie["dispositions"] == {
+        reputation_disposition.BOTH_AXES: 1,
+        reputation_disposition.KNOWN_MALICIOUS: 1,
+        reputation_disposition.KNOWN_SOFTWARE: 1,
+        reputation_disposition.REPUTATION_UNAVAILABLE: 0,
+        reputation_disposition.UNKNOWN: 1,
+    }
+
+    (declarat,) = reputatie["snapshots"]
+    assert declarat["fingerprint"] == reputation_store.fingerprint(str(instantaneu))
+    assert [s["name"] for s in declarat["identity"]["sources"]] == [RDS, BAZAAR]
+
+
+def test_the_published_figure_keeps_unavailable_apart_from_unknown(
+    client, registered_agent_id
+):
+    """
+    Fără instantaneu, cele patru evenimente nu se adună în `unknown`.
+
+    Dacă s-ar aduna, o pană a depozitului ar publica exact cifra unui corpus
+    complet nou — adică rezultatul cel mai favorabil lucrării, produs de o
+    defecțiune. Și `snapshots` rămâne gol: n-a răspuns nimeni.
+    """
+    _eveniment(client, registered_agent_id, MALICIOS.hex(), "evt-1")
+    _eveniment(client, registered_agent_id, ABSENT.hex(), "evt-2")
+
+    reputatie = _metrica(client)
+
+    assert reputatie["dispositions"][reputation_disposition.UNKNOWN] == 0
+    assert reputatie["dispositions"][reputation_disposition.REPUTATION_UNAVAILABLE] == 2
+    assert reputatie["snapshots"] == []
+
+
+def test_the_denominator_is_events_with_a_hash_not_every_event(
+    client, registered_agent_id, instantaneu
+):
+    """
+    Numitorul propriu, exact ca la `by_tier`. Un eveniment de ciclu de viață n-a
+    avut niciodată ce căuta în depozit, deci nu are ce umfla numitorul.
+    """
+    _eveniment(client, registered_agent_id, ABSENT.hex(), "evt-1")
+    client.post(
+        "/api/events",
+        json={
+            "agent_id": registered_agent_id,
+            "event_type": "agent_startup",
+            "client_event_id": "evt-pornire",
+        },
+    )
+
+    reputatie = _metrica(client)
+
+    assert reputatie["events_with_hash"] == 1
+    assert sum(reputatie["dispositions"].values()) == 1
+
+
+def test_events_from_before_the_lookup_are_a_declared_gap_not_unknowns(
+    client, registered_agent_id, instantaneu
+):
+    """
+    Un eveniment scris înainte de v8 are hash și n-are dispoziție.
+
+    Numărat ca `unknown`, o rulare veche ar arăta ca un corpus complet nou — la
+    fel ca la confuzia dintre indisponibil și necunoscut, dar pe axa timpului.
+    Intră deci într-un gol declarat, ca `file_events_without_tier` la §2.1.
+    """
+    event_store.insert_event(
+        {
+            "agent_id": registered_agent_id,
+            "event_type": "file_created",
+            "client_event_id": "evt-vechi",
+            "sha256": MALICIOS.hex(),
+            "hash_status": "ok",
+            "file_size": 10,
+            "received_at": "2026-08-01T00:00:00+00:00",
+            "run_id": measurement_run.current_run_id(),
+            "status": "received",
+        }
+    )
+
+    reputatie = _metrica(client)
+
+    assert reputatie["events_with_hash"] == 1
+    assert reputatie["hashed_events_without_disposition"] == 1
+    assert sum(reputatie["dispositions"].values()) == 0
+
+
+def test_the_published_figure_carries_no_benign_term_and_no_closure_rate(
+    client, registered_agent_id, instantaneu
+):
+    """
+    Două interdicții în aceeași aserțiune, fiindcă au aceeași cauză.
+
+    Niciun termen de benignitate: `known_software` nu poate deveni „curat"
+    într-o cifră, după ce structura depozitului a interzis-o în date. Și nicio
+    rată de închidere: maparea dispoziție → închis e decizia benzii (§L2.7), iar
+    scrisă aici ar fi al doilea mecanism de decizie din sistem.
+    """
+    _eveniment(client, registered_agent_id, SOFTWARE.hex(), "evt-1")
+
+    brut = client.get("/api/metrics/disclosure").text
+    gasit = BENIGNITATE.search(brut)
+
+    assert gasit is None, f"Metrica publică un termen de benignitate: {gasit!r}"
+
+    reputatie = _metrica(client)
+    chei = set(reputatie)
+
+    assert not {"closed", "closed_at_t0", "closure_rate", "escalated"} & chei, (
+        f"Metrica publică o rată de închidere: {sorted(chei)}. Maparea "
+        f"dispoziție → închis aparține benzii de incertitudine, nu acestui tabel."
+    )
+
+
+# ── Pornirea ─────────────────────────────────────────────────────────────────
+
+def test_the_snapshot_is_warmed_at_startup_not_on_the_first_event(instantaneu):
+    """
+    Amprentarea instantaneului nu are voie să cadă pe calea de ingestie.
+
+    Pe instantaneul real, calculul durează 8,3 secunde, iar timeout-ul agentului
+    e de 5. Lăsată leneșă, prima cerere cu hash a fiecărei porniri expira
+    garantat, iar retransmisia intra în numărătorul măsurat — o cifră stricată
+    sistematic, de noi.
+
+    Testul verifică efectul, nu durata: după încălzire, identitatea e deja
+    disponibilă, deci nimic nu mai rămâne de calculat la prima consultare.
+    """
+    from app.main import warm_reputation_snapshot
+
+    warm_reputation_snapshot()
+
+    assert reputation_store.snapshot_identity()["fingerprint"] == (
+        reputation_store.fingerprint(str(instantaneu))
+    )
+
+
+def test_a_missing_snapshot_does_not_stop_the_server_from_starting():
+    """
+    Un server fără depozit răspunde `reputation_unavailable` — stare declarată,
+    nu defect. Oprit la pornire, ar cupla disponibilitatea telemetriei de cea a
+    reputației, adică exact decizia refuzată la F4, mutată cu un nivel mai sus.
+    """
+    from app.main import warm_reputation_snapshot
+
+    warm_reputation_snapshot()  # fixture-ul din conftest lasă calea spre un fișier absent
+
+
 # ── Vocabularul, ca mulțime închisă ──────────────────────────────────────────
 
 def test_the_vocabulary_carries_no_benign_term():

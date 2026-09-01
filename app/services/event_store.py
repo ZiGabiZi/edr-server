@@ -543,25 +543,46 @@ def record_run_snapshot(
     return False
 
 
-def run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
-    """Instantaneul consemnat al unei rulări, sau None dacă n-a consultat depozitul."""
+def run_snapshots(run_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Instantaneele consemnate: ale unei rulări, sau ale tuturor.
+
+    Forma de listă e cea potrivită și pentru cazul agregat, unde o cifră peste
+    mai multe rulări poate să fi folosit mai multe instantanee. Contopite într-o
+    singură declarație, `METRICS.md` §8 ar fi respectat doar în aparență: cine
+    citește cifra ar crede că descrie un sistem, când descrie două.
+    """
     with _lock:
         connection = _connection_locked()
 
-        row = connection.execute(
-            "SELECT recorded_at, fingerprint, identity FROM run_reputation "
-            "WHERE run_id = ?",
-            (run_id,),
-        ).fetchone()
+        if run_id is None:
+            rows = connection.execute(
+                "SELECT run_id, recorded_at, fingerprint, identity "
+                "FROM run_reputation ORDER BY recorded_at, run_id"
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT run_id, recorded_at, fingerprint, identity "
+                "FROM run_reputation WHERE run_id = ?",
+                (run_id,),
+            ).fetchall()
 
-    if row is None:
-        return None
+    return [
+        {
+            "run_id": row[0],
+            "recorded_at": row[1],
+            "fingerprint": row[2],
+            "identity": json.loads(row[3]),
+        }
+        for row in rows
+    ]
 
-    return {
-        "recorded_at": row[0],
-        "fingerprint": row[1],
-        "identity": json.loads(row[2]),
-    }
+
+def run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
+    """Instantaneul consemnat al unei rulări, sau None dacă n-a consultat depozitul."""
+    consemnate = run_snapshots(run_id)
+
+    return consemnate[0] if consemnate else None
 
 
 def close() -> None:
