@@ -169,7 +169,7 @@ auth_service.list_key_records()   # amprente, niciodată chei
 Are efect după repornirea serverului — cheile trăiesc în memoria procesului. E o
 limitare cunoscută, urmărită ca issue.
 
-Testele — **116**:
+Testele — **328**:
 
 ```bash
 .venv/bin/python -m pytest app/tests -q
@@ -177,6 +177,96 @@ Testele — **116**:
 
 Verificările cross-repo cer clona `edr-agent` alături. Absența ei e skip local și
 eșec sub CI; `EDR_REQUIRE_PEER_REPO` forțează oricare comportament.
+
+---
+
+## Instantaneul de reputație
+
+Ce știe serverul despre un fișier înainte de orice analiză decide cât se poate
+închide la treapta zero, deci decide afirmația principală: un fișier escaladează o
+dată, pe o mașină, iar restul parcului îl recunoaște gratis. Fără memoria asta,
+costul per endpoint ar fi constant în dimensiunea parcului.
+
+**Se construiește afară, se citește înăuntru.** Importul cere ~169 GiB de spațiu
+tranzitoriu; serverul are 66 liberi. Dar motivul nu e aritmetic: într-un mediu
+izolat, o bază de reputație nu se construiește în rețeaua închisă — se
+construiește afară și se livrează ca artefact, aceeași mișcare ca la coborârea
+rulesetului. Din cele cinci module `reputation_*`, doar `reputation_store.py`
+rulează pe server; restul rulează pe gazdă și n-ar putea rula aici.
+
+### Construirea, pe gazdă
+
+```bash
+curl -L -C - -o RDS_2026.03.1_modern_minimal.zip https://s3.amazonaws.com/rds.nsrl.nist.gov/RDS/rds_2026.03.1/RDS_2026.03.1_modern_minimal.zip
+sha1sum RDS_2026.03.1_modern_minimal.zip # contra sumei publicate de NIST
+python3 -m zipfile -e RDS_2026.03.1_modern_minimal.zip rds_2026/
+```
+
+```bash
+.venv/bin/python -m app.services.reputation_import_rds --sursa rds_2026/RDS_2026.03.1_modern_minimal.db --depozit storage/reputation.build --versiune 2026.03.1
+
+.venv/bin/python -m app.services.reputation_import_bazaar --sursa inventar/inventar.json --depozit storage/reputation.build
+
+.venv/bin/python -m app.services.reputation_build --iesire storage/reputation.db --sigileaza-din storage/reputation.build
+```
+
+| etapă | durată | spațiu |
+|---|---|---|
+| descărcare | 45 min | 18,8 GB |
+| dezarhivare | 50 min | 169 GiB |
+| import, 432,9 M rânduri citite | ~2 h | 3,5 GB |
+| sigilare | 10 min | 3,06 GB |
+
+Importul RDS e reluabil: `Ctrl+C` oricând, iar reluarea continuă de la ultima
+amprentă comisă și ajunge în aceeași stare ca o rulare neîntreruptă. Baza de lucru
+`.build` nu e instantaneul — devine unul abia prin sigilare, care o trece prin
+`VACUUM INTO`. Pasul acela nu e o optimizare: o bază lăsată în WAL nu se poate
+deschide read-only fără drept de scriere, fiindcă cititorul are nevoie să creeze
+`-wal` și `-shm`.
+
+După sigilare se șterg baza NIST și `.build`. Pe server pleacă doar fișierul de
+3,06 GB.
+
+### Verificarea, înainte de livrare
+
+```bash
+.venv/bin/python -m app.services.reputation_coverage --manifest Corpus_Manifest/manifest.json --instantaneu storage/reputation.db --amprenta <amprenta>
+```
+
+Două verificări de sănătate, enunțate înainte de prima rulare: artefactele
+compilate local trebuie să **lipsească** din RDS, iar binarele de sistem trebuie
+să **apară**, peste 50%. Primul eșec înseamnă că nu există categoria de fișiere
+benigne și necunoscute în același timp; al doilea, că ediția importată nu acoperă
+versiunea de Windows folosită.
+
+Cu `--amprenta`, raportul refuză să ruleze pe alt instantaneu decât cel numit. O
+cale greșită ar produce zerouri — cea mai flatantă cifră posibilă despre un sistem
+de confidențialitate, obținută dintr-o greșeală de tastare.
+
+### Citirea, pe server
+
+Serverul deschide fișierul `mode=ro&immutable=1`. Orice scriere eșuează, iar
+`immutable=1` e o promisiune pe care o facem noi: schimbul se face prin
+înlocuire, nu prin editare pe loc.
+
+```python
+from app.services import reputation_store
+reputation_store.lookup(sha256_ca_32_de_octeti)   # -> Knowledge, niciodată None
+reputation_store.snapshot_identity()              # amprentă + surse, pentru METRICS.md 8
+```
+
+`lookup()` întoarce întotdeauna ambele axe — *cunoscut ca software* și *cunoscut ca
+amenințare* — niciodată un boolean și niciodată `None`. Nu există și nu va exista
+un câmp `clean`: `CORPUS.md` 5.4 interzice verdictul curat derivat din
+apartenența la RDS, iar un câmp cu numele acela ar fi citit ca verdict de prima
+persoană grăbită.
+
+**Ce se declară lângă orice cifră** (`METRICS.md` 8.1): amprenta instantaneului,
+sursele consultate cu versiunile lor, și **brațul ablației**. Ultimul nu e
+opțional — selecția corpusului a fost făcută din inventarul de amenințări, deci un
+instantaneu care îl conține închide tot stratul malițios la treapta zero. O cifră
+raportată fără să spună care braț a fost rulat poate fi produsă și de o simplă
+listă de amprente.
 
 ---
 
