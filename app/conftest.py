@@ -8,6 +8,8 @@ import app.services.agent_service as agent_service
 import app.services.auth_service as auth_service
 import app.services.event_service as event_service
 import app.services.measurement_run as measurement_run
+import app.services.reputation_disposition as reputation_disposition
+import app.services.reputation_store as reputation_store
 import app.services.wire_accounting as wire_accounting
 import app.services.wire_alarm as wire_alarm
 from app.tests.support import make_test_client
@@ -60,6 +62,38 @@ def _redirect_logging_away_from_server_log() -> None:
 
 
 _redirect_logging_away_from_server_log()
+
+
+@pytest.fixture(autouse=True)
+def isolated_reputation_snapshot(tmp_path, monkeypatch):
+    """
+    Niciun test nu citește instantaneul real de pe mașina care rulează suita.
+
+    Calea implicită e `storage/reputation.db`, iar acolo stă instantaneul de
+    producție — 3,28 GB azi. Fără izolarea de aici, două lucruri s-ar întâmpla
+    la prima consultare din suită, amândouă grave și niciunul zgomotos:
+
+        - fiecare deschidere ar amprenta 3,28 GB, deci suita ar încetini cu
+          ordine de mărime fără nicio cauză vizibilă în teste;
+        - rezultatele ar depinde de CE conține instantaneul acelei mașini. Un
+          test care afirmă „hash necunoscut → `unknown`" ar trece pe un laptop
+          și ar pica pe altul, iar cifra n-ar mai fi despre cod.
+
+    Calea arată către un fișier care nu există, deci comportamentul implicit al
+    suitei e `reputation_unavailable` — starea onestă pentru „n-am ce întreba".
+    Testele care au nevoie de răspunsuri își construiesc propriul instantaneu și
+    suprascriu variabila, ca `test_reputation_store.py`.
+    """
+    monkeypatch.setenv(
+        reputation_store.SNAPSHOT_PATH_ENV, str(tmp_path / "fara-instantaneu.db")
+    )
+    reputation_store.reset_for_tests()
+    reputation_disposition.reset_for_tests()
+
+    yield
+
+    reputation_store.reset_for_tests()
+    reputation_disposition.reset_for_tests()
 
 
 @pytest.fixture

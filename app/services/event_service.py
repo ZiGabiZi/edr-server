@@ -12,7 +12,7 @@ from threading import Lock
 from typing import List, Dict, Optional, Set
 
 from app.schemas.event import EventCreateRequest
-from app.services import event_store, measurement_run
+from app.services import event_store, measurement_run, reputation_disposition
 
 
 # Rulările pentru care ACEST proces a primit evenimente.
@@ -71,7 +71,22 @@ def create_event(event: EventCreateRequest) -> dict:
     `event_id` vine tot din depozit. Contorul de proces de dinainte repornea de
     la 1 la fiecare pornire a serverului, deci ar fi produs coliziuni cu
     rândurile deja scrise.
+
+    Dispoziția de reputație se calculează ÎNAINTE de inserare și intră în
+    payload, nu se lipește pe răspuns după. Diferența contează exact la
+    retransmisie: `insert_event` întoarce rândul deja existent, deci evenimentul
+    păstrează dispoziția PRIMEI sosiri, nu pe cea a instantaneului de acum. Fără
+    ordinea asta, aceeași retransmisie sosită după un schimb de instantaneu ar
+    raporta altă dispoziție decât cea persistată — același eveniment cu două
+    adevăruri, iar „câte s-au închis la T0" n-ar mai putea fi reconstruit.
+
+    Consultarea de la o retransmisie e deci muncă aruncată. Se putea evita
+    căutând întâi duplicatul, dar între căutare și inserare ar încăpea o a doua
+    cerere — aceeași fereastră pe care `ON CONFLICT` există s-o închidă. O
+    căutare în plus e mai ieftină decât o cursă.
     """
+    run_id = measurement_run.current_run_id()
+
     new_event = {
         "agent_id": event.agent_id,
         "agent_instance_id": event.agent_instance_id,
@@ -83,10 +98,11 @@ def create_event(event: EventCreateRequest) -> dict:
         "file_size": event.file_size,
         "measurements": event.measurements.model_dump() if event.measurements else None,
         "disclosure": event.disclosure.model_dump() if event.disclosure else None,
+        "reputation": reputation_disposition.for_event(event.sha256, run_id),
         "description": event.description,
         "occurred_at": event.occurred_at,
         "received_at": utc_now(),
-        "run_id": measurement_run.current_run_id(),
+        "run_id": run_id,
         "status": "received",
     }
 

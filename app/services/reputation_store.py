@@ -256,6 +256,7 @@ UNKNOWN = Knowledge(known_software=False, known_malicious=False)
 _lock = threading.Lock()
 _connection: Optional[sqlite3.Connection] = None
 _snapshot_path: Optional[str] = None
+_fingerprint: Optional[str] = None
 
 
 def configured_path() -> str:
@@ -411,16 +412,28 @@ def _meta_value(connection: sqlite3.Connection, key: str) -> Optional[str]:
 
 def _connection_locked() -> sqlite3.Connection:
     """Conexiunea partajată, deschisă la prima nevoie. Cere _lock deținut."""
-    global _connection, _snapshot_path
+    global _connection, _snapshot_path, _fingerprint
 
     if _connection is None:
         _snapshot_path = configured_path()
         _connection = open_readonly(_snapshot_path)
 
+        # Amprenta se calculează O DATĂ, la deschidere, și se ține până la
+        # `close()`. Nu e o optimizare oportunistă, ci consecința promisiunii de
+        # deschidere: `immutable=1` spune că fișierul nu se schimbă sub noi, deci
+        # o a doua citire a acelorași octeți nu poate da alt răspuns.
+        #
+        # Fără memorare, `snapshot_identity()` ar reciti tot fișierul la fiecare
+        # apel — 3,06 GB azi, până la 20 GB la pragul R1 — iar de la P2.3
+        # apelantul e calea de ingestie: primul eveniment cu hash al unei rulări
+        # ar fi hash-uit instantaneul de două ori, o dată aici pentru linia de
+        # log și o dată acolo, ținând `_lock` de fiecare dată.
+        _fingerprint = fingerprint(_snapshot_path)
+
         logger.info(
             "Reputation snapshot opened at %s (fingerprint %s).",
             _snapshot_path,
-            fingerprint(_snapshot_path)[:16],
+            _fingerprint[:16],
         )
 
     return _connection
@@ -484,6 +497,7 @@ def snapshot_identity() -> Dict[str, Any]:
     with _lock:
         connection = _connection_locked()
         cale = _snapshot_path
+        amprenta = _fingerprint
 
         surse = [
             {
@@ -506,7 +520,7 @@ def snapshot_identity() -> Dict[str, Any]:
 
     return {
         "path": cale,
-        "fingerprint": fingerprint(cale),
+        "fingerprint": amprenta,
         "schema_version": SCHEMA_VERSION,
         "built_at": construit_la,
         "sources": surse,
@@ -515,7 +529,7 @@ def snapshot_identity() -> Dict[str, Any]:
 
 def close() -> None:
     """Închide conexiunea partajată, dacă e deschisă."""
-    global _connection, _snapshot_path
+    global _connection, _snapshot_path, _fingerprint
 
     with _lock:
         if _connection is not None:
@@ -523,6 +537,7 @@ def close() -> None:
 
         _connection = None
         _snapshot_path = None
+        _fingerprint = None
 
 
 def reset_for_tests() -> None:

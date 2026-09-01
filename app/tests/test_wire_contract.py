@@ -32,6 +32,7 @@ from app.schemas.event import (
     EventCreateResponse,
     EventDisclosure,
     EventMeasurements,
+    EventReputation,
     EventResponse,
 )
 from app.schemas.heartbeat import HeartbeatDirective, HeartbeatRequest, HeartbeatResponse
@@ -100,6 +101,7 @@ CONTRACT_MODELS = {
     "heartbeat_directive": HeartbeatDirective,
     "event_measurements": EventMeasurements,
     "event_disclosure": EventDisclosure,
+    "event_reputation": EventReputation,
     "event_response": EventResponse,
 }
 

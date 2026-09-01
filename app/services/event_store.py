@@ -145,6 +145,32 @@ _SCHEMA = (
         opened_at TEXT NOT NULL
     )
     """,
+    # Instantaneul de reputație pe care a rulat fiecare rulare (`METRICS.md` §8).
+    #
+    # De ce un tabel NOU și nu o coloană în `measurement_runs`: nu există niciun
+    # mecanism de migrare aici, iar `CREATE TABLE IF NOT EXISTS` e aditiv pe o
+    # bază deja scrisă — `ALTER TABLE` n-ar fi. O bază de evenimente existentă
+    # capătă tabelul gol la prima deschidere și nimic nu se pierde.
+    #
+    # De ce pe RULARE și nu pe eveniment: identitatea instantaneului nu e o
+    # proprietate a evenimentului. Conexiunea la depozit se deschide o dată per
+    # proces, `immutable=1` e promisiunea că fișierul nu se schimbă dedesubt, iar
+    # o etichetă de rulare nu poate fi redeschisă (cheia primară de mai sus o
+    # refuză) — deci o rulare vede exact un instantaneu. Repetată pe fiecare
+    # eveniment, lista surselor ar fi aceeași repetiție pe care schema de
+    # reputație a refuzat-o stocând sursa ca întreg.
+    #
+    # `fingerprint` are coloana lui, deși apare și în `identity`: e singura
+    # întrebare pusă des — „ce a citit serverul când a produs cifra asta" — și
+    # singura pe care o divergență o poate semnala fără să despacheteze JSON.
+    """
+    CREATE TABLE IF NOT EXISTS run_reputation (
+        run_id      TEXT NOT NULL PRIMARY KEY,
+        recorded_at TEXT NOT NULL,
+        fingerprint TEXT NOT NULL,
+        identity    TEXT NOT NULL
+    )
+    """,
 )
 
 
@@ -460,6 +486,82 @@ def known_runs() -> List[Dict[str, str]]:
         {"run_id": run_id, "source": source, "opened_at": opened_at}
         for run_id, source, opened_at in rows
     ]
+
+
+def record_run_snapshot(
+    run_id: str, recorded_at: str, snapshot_fingerprint: str, identity: str
+) -> bool:
+    """
+    Consemnează instantaneul de reputație pe care a rulat o rulare. O singură dată.
+
+    Întoarce True dacă rândul a fost scris acum. Un al doilea apel pentru aceeași
+    rulare nu rescrie nimic — prima consemnare e cea corectă, fiindcă ea descrie
+    instantaneul care a răspuns primului eveniment.
+
+    Dacă a doua consemnare vine cu ALTĂ amprentă, invarianta „o rulare vede un
+    singur instantaneu" e ruptă, iar orice cifră a rulării devine imposibil de
+    atribuit. Nu se repară aici și nu se aruncă: evenimentul care a declanșat-o
+    e valid și trebuie primit. Se strigă în log, la ERROR, cu ambele amprente —
+    o rulare care amestecă două instantanee trebuie aruncată de om, nu corectată
+    tăcut de server.
+    """
+    with _lock:
+        connection = _connection_locked()
+
+        try:
+            cursor = connection.execute(
+                "INSERT INTO run_reputation "
+                "(run_id, recorded_at, fingerprint, identity) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (run_id) DO NOTHING",
+                (run_id, recorded_at, snapshot_fingerprint, identity),
+            )
+            connection.commit()
+
+            if cursor.rowcount == 1:
+                return True
+
+            existing = connection.execute(
+                "SELECT fingerprint FROM run_reputation WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        except sqlite3.Error as error:
+            raise EventStoreError(
+                f"Could not record the reputation snapshot of run {run_id!r}: {error}"
+            ) from error
+
+    if existing is not None and existing[0] != snapshot_fingerprint:
+        logger.error(
+            "Run %s has already been recorded against reputation snapshot %s, but "
+            "an event was just answered by %s. A run must see exactly one "
+            "snapshot; every figure of this run is now unattributable and the "
+            "run should be discarded, not reused.",
+            run_id,
+            existing[0][:16],
+            snapshot_fingerprint[:16],
+        )
+
+    return False
+
+
+def run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
+    """Instantaneul consemnat al unei rulări, sau None dacă n-a consultat depozitul."""
+    with _lock:
+        connection = _connection_locked()
+
+        row = connection.execute(
+            "SELECT recorded_at, fingerprint, identity FROM run_reputation "
+            "WHERE run_id = ?",
+            (run_id,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "recorded_at": row[0],
+        "fingerprint": row[1],
+        "identity": json.loads(row[2]),
+    }
 
 
 def close() -> None:

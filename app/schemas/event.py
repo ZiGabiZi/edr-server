@@ -240,6 +240,31 @@ class EventCreateRequest(WireModel):
         return self
 
 
+class EventReputation(BaseModel):
+    """
+    Ce stie depozitul de reputatie despre fisierul evenimentului, la T0.
+
+    Se produce pe SERVER si insoteste evenimentul stocat; agentul nu are voie
+    sa o trimita, iar contractul o trece ca interzisa pe event_create_request.
+    Un endpoint care si-ar declara singur reputatia ar face memoria partajata sa
+    depinda de ce afirma masina observata — exact increderea pe care modelul de
+    amenintari o refuza.
+
+    `disposition` e o dispozitie de TREAPTA, nu un verdict: spune ce se stie la
+    adancimea T0. Vocabularul si motivele lui sunt in
+    app/services/reputation_disposition.py, care e si singurul loc care le
+    produce.
+
+    `source` calatoreste doar pe axa de amenintare. Provenienta RDS ramane pe
+    server: apartenenta la o lista de software cunoscut nu poate justifica nicio
+    actiune (CORPUS.md 5.4), deci ar fi octeti platiti ca sa se spuna „cunoscut,
+    dar asta nu inseamna nimic".
+    """
+
+    disposition: str
+    source: Optional[str] = None
+
+
 class EventResponse(BaseModel):
     """
     Evenimentul stocat, asa cum pleaca inapoi spre agent.
@@ -273,6 +298,7 @@ class EventResponse(BaseModel):
     file_size: Optional[int] = None
     measurements: Optional[EventMeasurements] = None
     disclosure: Optional[EventDisclosure] = None
+    reputation: Optional[EventReputation] = None
     description: Optional[str] = None
     occurred_at: Optional[str] = None
     received_at: Optional[str] = None
