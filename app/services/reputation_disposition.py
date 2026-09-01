@@ -110,6 +110,23 @@ def _disposition_of(knowledge: Knowledge) -> str:
     return UNKNOWN
 
 
+def describe(knowledge: Knowledge) -> Dict[str, Any]:
+    """
+    Traduce ce a întors depozitul în forma care pleacă pe fir.
+
+    Publică și pură: nu atinge depozitul de evenimente și nu consemnează nicio
+    rulare, ca o unealtă de diagnostic să poată întreba „ce ar răspunde serverul
+    pentru hash-ul ăsta" fără să lase urme într-un experiment
+    (`app/services/reputation_probe.py`).
+
+    Proveniența călătorește doar pe axa de amenințare — vezi `for_event`.
+    """
+    return {
+        "disposition": _disposition_of(knowledge),
+        "source": knowledge.threat_source if knowledge.known_malicious else None,
+    }
+
+
 def _record_snapshot_once(run_id: str) -> None:
     """
     Leagă rularea de instantaneul care i-a răspuns (`METRICS.md` §8).
@@ -178,12 +195,7 @@ def for_event(sha256_hex: Optional[str], run_id: str) -> Optional[Dict[str, Any]
 
     _record_snapshot_once(run_id)
 
-    dispozitie = _disposition_of(cunoastere)
-
-    return {
-        "disposition": dispozitie,
-        "source": cunoastere.threat_source if cunoastere.known_malicious else None,
-    }
+    return describe(cunoastere)
 
 
 def reset_for_tests() -> None:

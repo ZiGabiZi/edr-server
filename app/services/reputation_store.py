@@ -94,7 +94,7 @@ import os
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 
 logger = logging.getLogger(__name__)
@@ -125,6 +125,12 @@ META_BUILDER = "builder"
 # schemă, deci o sursă nu poate ateriza pe o axă inventată.
 AXIS_SOFTWARE = "software"
 AXIS_THREAT = "threat"
+
+# Cele doua brate ale ablatiei (`METRICS.md` 8.1). Numele apar langa fiecare
+# cifra care a folosit depozitul: diferenta dintre ele e chiar ce separa
+# contributia protocolului de arta anterioara.
+ABLATION_COLD = "rece"
+ABLATION_SEMI_ENDOWED = "semiinzestrat"
 
 
 SCHEMA = (
@@ -523,8 +529,29 @@ def snapshot_identity() -> Dict[str, Any]:
         "fingerprint": amprenta,
         "schema_version": SCHEMA_VERSION,
         "built_at": construit_la,
+        "ablation_arm": ablation_arm(surse),
         "sources": surse,
     }
+
+
+def ablation_arm(sources: List[Dict[str, Any]]) -> str:
+    """
+    Brațul ablației, derivat din sursele consultate (`METRICS.md` §8.1).
+
+    Prezența unei surse pe axa de amenințare înseamnă brațul SEMIÎNZESTRAT: din
+    inventarul acela a fost făcută selecția corpusului, deci tot stratul malițios
+    se închide la T0 fără ca protocolul să fi făcut ceva. Absența ei e brațul
+    RECE, singurul pe care se sprijină afirmația lucrării.
+
+    Se derivă, nu se configurează: un parametru scris de mână ar putea să nu
+    corespundă fișierului deschis, iar §8.1 cere brațul lângă fiecare cifră tocmai
+    ca diferența dintre cele două să nu poată fi confundată cu un rezultat.
+    """
+    return (
+        ABLATION_SEMI_ENDOWED
+        if any(sursa["axis"] == AXIS_THREAT for sursa in sources)
+        else ABLATION_COLD
+    )
 
 
 def close() -> None:
