@@ -322,6 +322,64 @@ def test_the_published_figure_claims_no_saving(client, registered_agent_id):
     )
 
 
+def test_the_histogram_reproduces_a_known_distribution(client, registered_agent_id):
+    """
+    Criteriul de ieșire, la scară mică: conducta reproduce o distribuție dată.
+
+    E singura proprietate a pasului care se poate INFIRMA. Corpusul e proiectat
+    cu suprapunere fixată, deci histograma finală e prezisă înainte de
+    măsurătoare; dacă iese altceva, defectul e în numărare, nu în parc.
+
+    Aici, planul e `{1: 3, 2: 2, 3: 1}` — șase conținuturi, zece plasări.
+    """
+    plan = {1: 3, 2: 2, 3: 1}
+    agenti = [registered_agent_id] + [_inroleaza(client, f"agent-{i}") for i in (2, 3)]
+
+    numar = 0
+    rotativ = 0
+
+    for masini, fisiere in sorted(plan.items()):
+        for _ in range(fisiere):
+            digest = hashlib.sha256(f"plan-{numar}".encode()).hexdigest()
+
+            for k in range(masini):
+                _fisier(
+                    client,
+                    agenti[(rotativ + k) % len(agenti)],
+                    digest,
+                    f"evt-{numar}-{k}",
+                )
+
+            rotativ += 1
+            numar += 1
+
+    p = _cifra(client)["prevalence"]
+
+    assert p["histogram"] == {"1": 3, "2": 2, "3": 1}
+    assert p["distinct_hashes"] == 6
+    assert p["placements"] == 10
+    assert p["machines_per_hash"] == round(10 / 6, 4)
+
+
+def test_on_an_empty_registry_every_content_is_seen_first_exactly_once(
+    client, registered_agent_id
+):
+    """
+    Invarianta care leagă cele două jumătăți ale cifrei.
+
+    Pe o memorie goală, fiecare conținut distinct are exact o primă vedere, deci
+    `events_at_first_sighting` trebuie să fie egal cu `distinct_hashes`. Dacă
+    diferă, ori s-a numărat de două ori o primă vedere, ori una s-a pierdut — și
+    niciuna dintre cele două n-ar produce vreo eroare vizibilă altundeva.
+    """
+    _parc_de_proba(client, registered_agent_id)
+
+    p = _cifra(client)["prevalence"]
+
+    assert p["baselines"][0]["distinct_hashes"] == 0, "premisa: memorie goală"
+    assert p["events_at_first_sighting"] == p["distinct_hashes"]
+
+
 def test_the_baseline_of_a_later_run_carries_the_memory_of_the_earlier_one(
     client, registered_agent_id
 ):
