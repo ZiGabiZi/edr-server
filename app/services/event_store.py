@@ -719,6 +719,29 @@ def park_agents() -> int:
     return count
 
 
+def prevalence_counts() -> Dict[str, int]:
+    """
+    Prevalența CURENTĂ a fiecărui conținut din registru, ca `{hex: mașini}`.
+
+    O singură interogare agregată, nu una per hash: cifra publicată acoperă
+    mii de hash-uri, iar o mie de citiri de prefix ar fi tot O(n) pe rulare,
+    doar împărțită în bucăți.
+
+    Întoarce tot registrul, iar apelantul filtrează. La montajul fixat sunt 1494
+    de hash-uri distincte, deci câteva zeci de kiloocteți. Într-un parc real ar
+    trebui restrâns în SQL, la fel ca `park_agents` — dar acolo n-ar mai încăpea
+    nici raportul întreg în memorie, deci limita e a rutei, nu a interogării.
+    """
+    with _lock:
+        connection = _connection_locked()
+
+        rows = connection.execute(
+            "SELECT sha256, COUNT(*) FROM prevalence GROUP BY sha256"
+        ).fetchall()
+
+    return {row[0].hex(): row[1] for row in rows}
+
+
 def prevalence_state() -> Dict[str, int]:
     """Starea memoriei parcului ACUM: hash-uri distincte și mașini distincte."""
     with _lock:

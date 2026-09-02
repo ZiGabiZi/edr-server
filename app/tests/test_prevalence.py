@@ -225,6 +225,103 @@ def test_the_run_baseline_is_recorded_before_the_first_event(
     assert consemnat["agents"] == 0
 
 
+def _parc_de_proba(client, primul_agent):
+    """Un conținut pe trei mașini, altul pe una. Patru evenimente, două conținuturi."""
+    _fisier(client, primul_agent, HASH_COMUN, "evt-1")
+
+    al_doilea = _inroleaza(client, "agent-2")
+    _fisier(client, al_doilea, HASH_COMUN, "evt-2")
+
+    al_treilea = _inroleaza(client, "agent-3")
+    _fisier(client, al_treilea, HASH_COMUN, "evt-3")
+
+    _fisier(client, primul_agent, HASH_UNIC, "evt-4")
+
+
+def _cifra(client):
+    raspuns = client.get("/api/metrics/disclosure")
+    assert raspuns.status_code == 200, raspuns.text
+    return raspuns.json()
+
+
+def test_the_histogram_counts_contents_not_events(client, registered_agent_id):
+    """
+    Numitorul histogramei e altul decât al celorlalte două tabele.
+
+    Patru evenimente cu hash, dar două conținuturi distincte: un fișier pe trei
+    mașini produce trei evenimente și UN rând în histogramă. Adunate, procentele
+    s-ar raporta la o mulțime care nu există.
+    """
+    _parc_de_proba(client, registered_agent_id)
+
+    m = _cifra(client)
+    p = m["prevalence"]
+
+    assert p["histogram"] == {"1": 1, "3": 1}
+    assert p["distinct_hashes"] == 2
+    assert p["placements"] == 4
+    assert p["machines_per_hash"] == 2.0
+    assert p["park_agents"] == 3
+
+    assert m["reputation"]["events_with_hash"] == 4, (
+        "Cele două tabele trebuie să rămână pe numitori diferiți: patru "
+        "evenimente cu hash, două conținuturi distincte."
+    )
+
+
+def test_what_was_answered_then_is_reported_apart_from_the_final_state(
+    client, registered_agent_id
+):
+    """
+    Histograma descrie starea de ACUM; ce s-a răspuns atunci se raportează separat.
+
+    Amestecate, o distribuție peste valorile răspunsurilor ar descrie în bună
+    parte ordinea sosirii, nu parcul. Aici: două evenimente au fost prima vedere
+    a unui conținut, două au sosit la un conținut pe care parcul îl știa deja.
+    """
+    _parc_de_proba(client, registered_agent_id)
+
+    p = _cifra(client)["prevalence"]
+
+    assert p["events_at_first_sighting"] == 2
+    assert p["events_with_prior_sighting"] == 2
+    assert p["hashed_events_without_prevalence"] == 0
+
+
+def test_the_published_figure_declares_the_starting_position(
+    client, registered_agent_id
+):
+    """
+    Registrul nu se amprentează, deci poziția de plecare e tot ce poate fi
+    declarat — iar fără ea două rulări cu memorii diferite ar publica cifre
+    incomparabile fără ca nimic să spună de ce.
+    """
+    _parc_de_proba(client, registered_agent_id)
+
+    (baza,) = _cifra(client)["prevalence"]["baselines"]
+
+    assert baza["run_id"] == measurement_run.current_run_id()
+    assert baza["distinct_hashes"] == 0
+    assert baza["agents"] == 0
+
+
+def test_the_published_figure_claims_no_saving(client, registered_agent_id):
+    """
+    „Câte escaladări a evitat parcul" cere să se știe care evenimente ar fi
+    escaladat, iar decizia aia e a benzii de incertitudine. Cifra numără; nu
+    interpretează.
+    """
+    _parc_de_proba(client, registered_agent_id)
+
+    chei = set(_cifra(client)["prevalence"])
+    interzise = {"saved", "savings", "avoided_escalations", "escalations_avoided", "score"}
+
+    assert not interzise & chei, (
+        f"Cifra publică o economie: {sorted(interzise & chei)}. Interpretarea "
+        f"aparține benzii, nu tabelului."
+    )
+
+
 def test_the_baseline_of_a_later_run_carries_the_memory_of_the_earlier_one(
     client, registered_agent_id
 ):

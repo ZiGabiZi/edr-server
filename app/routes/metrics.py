@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query
 from app.routes.scope import RunScope, RunScopeDependency
 from app.services import event_service, event_store, wire_accounting
 from app.services.disclosure_metrics import compute_disclosure_metrics
+from app.services.prevalence_metrics import compute_prevalence_metrics
 from app.services.reputation_metrics import compute_reputation_metrics
 
 
@@ -191,6 +192,17 @@ def disclosure_metrics(
     metrics["reputation"] = compute_reputation_metrics(
         events,
         event_store.run_snapshots(None if scope.covers_all_runs else scope.run_id),
+    )
+
+    # A treia cifră, și a treia oară aceeași grijă: numitorul ei e altul.
+    # `by_tier` și `reputation` numără evenimente; histograma de mai jos numără
+    # conținuturi distincte. Publicate ca un singur tabel, procentele s-ar aduna
+    # peste mulțimi diferite și n-ar descrie niciuna.
+    metrics["prevalence"] = compute_prevalence_metrics(
+        events,
+        event_store.prevalence_counts(),
+        event_store.run_prevalences(None if scope.covers_all_runs else scope.run_id),
+        event_store.park_agents(),
     )
 
     # Declarația de corpus stă PRIMA în răspuns, nu ultima. Cine deschide
