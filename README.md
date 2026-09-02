@@ -169,7 +169,7 @@ auth_service.list_key_records()   # amprente, niciodată chei
 Are efect după repornirea serverului — cheile trăiesc în memoria procesului. E o
 limitare cunoscută, urmărită ca issue.
 
-Testele — **328**:
+Testele — **363**:
 
 ```bash
 .venv/bin/python -m pytest app/tests -q
@@ -268,6 +268,73 @@ instantaneu care îl conține închide tot stratul malițios la treapta zero. O 
 raportată fără să spună care braț a fost rulat poate fi produsă și de o simplă
 listă de amprente.
 
+### Consultarea, la ingestie
+
+La fiecare eveniment care poartă `sha256`, serverul consultă depozitul, persistă
+rezultatul lângă eveniment și îl declară în răspuns — în **aceeași** cerere.
+Nimic nu urcă în plus: dispoziția merge pe legătura descendentă, iar închiderea
+la treapta zero costă exact evenimentul T0 care a fost oricum trimis.
+
+```json
+"reputation": { "disposition": "known_malicious", "source": "MalwareBazaar" }
+```
+
+Cinci valori, care enumeră cele patru celule ale 2×2-ului plus indisponibilitatea:
+
+| valoare | ce spune |
+|---|---|
+| `known_malicious` | dovadă externă de amenințare; poartă proveniența |
+| `known_software` | prezent în RDS; **nu** înseamnă curat |
+| `both_axes` | ambele axe; celula de suprapunere, care nu se colapsează |
+| `unknown` | depozitul a fost întrebat și nu știe — candidatul la treapta următoare |
+| `reputation_unavailable` | depozitul **nu a putut fi întrebat** |
+
+**Ce întoarce serverul e o dispoziție de treaptă, nu un verdict.** Spune ce se
+știe la adâncimea T0, atât. Verdictele imuabile, legate de conținut, cu cheia
+`(sha256, versiune_ruleset, treaptă_de_dovadă)`, sunt Etapa 3; `verdict`,
+`clean`, `benign` și `safe` sunt **câmpuri interzise** în contractul de fir,
+tocmai ca enumul refuzat în depozit să nu se întoarcă pe legătură.
+
+**Ultimele două valori nu se contopesc**, și e cea mai importantă alegere a
+pasului. `unknown` înseamnă „am întrebat și nu se știe". `reputation_unavailable`
+înseamnă „n-am putut întreba". Adunate, o pană a instantaneului ar arăta identic
+cu un corpus complet nou — adică exact variabila de care depinde afirmația
+lucrării. Evenimentul se acceptă și atunci: un 5xx ar cupla disponibilitatea
+telemetriei de cea a reputației, iar coada agentului ar reîncerca la nesfârșit un
+eveniment perfect valid.
+
+`next_action` rămâne `"none"`. O directivă spune ce trebuie făcut, o dispoziție
+spune ce se știe; două mecanisme de decizie în același răspuns s-ar contrazice pe
+tăcute, iar decizia aparține benzii de incertitudine.
+
+**Ce se persistă:** dispoziția, în evenimentul stocat — deci „câte fișiere s-au
+închis la T0 în rularea X" se poate reconstrui după ce răspunsul a plecat. La o
+retransmisie se păstrează dispoziția PRIMEI sosiri, nu a instantaneului de acum;
+altfel același eveniment ar avea două adevăruri după un schimb de instantaneu.
+Identitatea instantaneului se consemnează o dată **pe rulare**, în tabelul
+`run_reputation`, nu pe fiecare eveniment: amprentarea citește tot fișierul, iar
+o rulare vede oricum exact un instantaneu.
+
+Cifra publicată e la `GET /api/metrics/disclosure`, în secțiunea `reputation`,
+cu numitorul ei propriu (`events_with_hash`) și cu instantaneul declarat. E o
+cifră **separată** de tabelul pe trepte: acela numără ce a declarat agentul că a
+divulgat, aceasta numără ce a conchis serverul. Vezi `METRICS.md` 3.5, inclusiv
+motivul pentru care nu se publică o rată de închidere.
+
+### Interogarea, de mână
+
+Ce ar răspunde serverul pentru o amprentă anume, fără server pornit:
+
+```bash
+.venv/bin/python -m app.services.reputation_probe --exemple
+.venv/bin/python -m app.services.reputation_probe --sha256 <64-hex>
+```
+
+`--exemple` alege singur câte un hash din fiecare celulă ocupată a
+instantaneului. Unealta trece prin exact codul folosit de ingestie și declară
+amprenta, sursele și brațul ablației — dar **nu scrie nimic**: nu consemnează
+nicio rulare, deci nu atinge un experiment în curs.
+
 ---
 
 ## Cum a fost construit
@@ -335,6 +402,13 @@ Partea de server a lucrării:
    absența repo-ului pereche: skip local, eșec sub CI. Un skip tăcut pe o mașină
    de integrare face exact cel mai puternic test din suită să tacă.
 
+7. **Un vocabular de răspuns în care „curat" e inexprimabil**, nu interzis printr-o
+   convenție. Cele cinci valori ale dispoziției enumeră complet ce poate ști
+   depozitul, iar `reputation_unavailable` e separat de `unknown` tocmai pentru că
+   ar fi singura defecțiune capabilă să producă exact rezultatul favorabil
+   lucrării. Câmpurile care ar readuce verdictul de benignitate sunt declarate
+   interzise în contract, deci o redenumire pică testele, nu revizuirea unui om.
+
 ---
 
 ## Future work
@@ -355,10 +429,12 @@ analist și drepturi distincte de cele ale agenților.
 **Revocare fără repornire.** Astăzi o revocare rescrie fișierul, dar procesul
 care rulează ține cheile în memorie și nu îl recitește.
 
-**Persistență reală.** `agents_store` și `events_store` sunt structuri în
-memorie. Depozitul de chei e deja persistat, pentru că altfel repornirea ar fi
-blocat parcul; restul nu e, iar metrica de divulgare se calculează deci doar
-peste evenimentele rulării curente.
+**Persistență reală, jumătatea rămasă.** `agents_store` e încă o structură în
+memorie. Depozitul de chei a fost persistat primul, pentru că altfel repornirea
+ar fi blocat parcul; evenimentele au urmat la 1.4.2, în SQLite, împreună cu
+registrul rulărilor de măsurătoare — deci metrica nu mai e legată de pornirea
+curentă a procesului. Inventarul de agenți e ce a mai rămas: o repornire îl
+golește, iar continuitatea se reconstruiește din heartbeat-uri.
 
 **TLS.** Terminarea TLS și emiterea certificatelor. Astăzi cheia de API circulă
 în clar, iar autentificarea apără împotriva unui client fără secret, nu împotriva
