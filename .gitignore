@@ -27,3 +27,6 @@ logs/
 enrollment_secret.txt
 agent_keys.json
 agent_keys.json.tmp
+
+# Jurnalele rotite: *.log nu le prinde, sufixul numeric le scoate din tipar.
+server.log.*
