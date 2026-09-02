@@ -8,6 +8,7 @@ import app.services.agent_service as agent_service
 import app.services.auth_service as auth_service
 import app.services.event_service as event_service
 import app.services.measurement_run as measurement_run
+import app.services.prevalence as prevalence
 import app.services.reputation_disposition as reputation_disposition
 import app.services.reputation_store as reputation_store
 import app.services.wire_accounting as wire_accounting
@@ -106,6 +107,12 @@ def client():
     # dintr-o rulare a suitei în următoarea — aceeași grijă ca la cheile de
     # agent, dezactivate mai jos.
     event_service.reset_for_tests()
+
+    # Registrul de prevalență trăiește în aceeași bază, deci se golește odată cu
+    # ea — dar cache-ul de proces care ține minte ce rulări au poziția de plecare
+    # consemnată nu. Fără golire, a doua rulare cu aceeași etichetă ar sări peste
+    # consemnare, iar testul ar trece sau ar pica după ordinea în care rulează.
+    prevalence.reset_for_tests()
 
     # Golește depozitul de chei ȘI dezactivează persistența lui: fără asta,
     # suita ar scrie agent_keys.json în rădăcina repo-ului și ar duce credențiale

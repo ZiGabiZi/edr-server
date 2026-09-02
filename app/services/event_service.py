@@ -12,7 +12,12 @@ from threading import Lock
 from typing import List, Dict, Optional, Set
 
 from app.schemas.event import EventCreateRequest
-from app.services import event_store, measurement_run, reputation_disposition
+from app.services import (
+    event_store,
+    measurement_run,
+    prevalence,
+    reputation_disposition,
+)
 
 
 # Rulările pentru care ACEST proces a primit evenimente.
@@ -99,6 +104,7 @@ def create_event(event: EventCreateRequest) -> dict:
         "measurements": event.measurements.model_dump() if event.measurements else None,
         "disclosure": event.disclosure.model_dump() if event.disclosure else None,
         "reputation": reputation_disposition.for_event(event.sha256, run_id),
+        "prevalence": prevalence.for_event(event.sha256, event.agent_id, run_id),
         "description": event.description,
         "occurred_at": event.occurred_at,
         "received_at": utc_now(),

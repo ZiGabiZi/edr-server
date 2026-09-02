@@ -171,6 +171,60 @@ _SCHEMA = (
         identity    TEXT NOT NULL
     )
     """,
+    # Memoria parcului: pe ce mașini s-a văzut fiecare conținut (decizia M2).
+    #
+    # De ce PERECHI și nu un contor pe hash: un contor incrementat nu se poate
+    # reconstrui ca „agenți distincți", iar a doua atingere a aceluiași fișier pe
+    # aceeași mașină l-ar umfla — o mașină care rescrie un fișier de 500 de ori ar
+    # arăta ca un parc. Cu cheia primară pe pereche, numărul e corect prin
+    # construcție, nu prin grija apelantului: aceeași apărare ca `ON CONFLICT` pe
+    # `client_event_id`.
+    #
+    # `WITHOUT ROWID` din același motiv ca la tabelul de reputație: cheia primară
+    # E identitatea rândului, deci un rowid separat ar fi un al doilea index peste
+    # aceleași date.
+    #
+    # `first_seen` și `last_seen` există de la început, deși niciun scor nu le
+    # folosește azi (M3). Vechimea intră în scor împreună cu prevalența — prezent
+    # pe 400 de mașini de trei luni nu înseamnă același lucru cu apărut pe 50 în
+    # zece minute. Costul unei coloane nefolosite e spațiu; costul uneia lipsă e
+    # un istoric care nu se poate reface retroactiv.
+    """
+    CREATE TABLE IF NOT EXISTS prevalence (
+        sha256     BLOB NOT NULL,
+        agent_id   TEXT NOT NULL,
+        first_seen TEXT NOT NULL,
+        last_seen  TEXT NOT NULL,
+
+        CHECK (length(sha256) = 32),
+
+        PRIMARY KEY (sha256, agent_id)
+    ) WITHOUT ROWID
+    """,
+    # Numitorul lui `agents` — câte mașini au raportat vreodată un fișier cu hash.
+    #
+    # Indexul e pe coloana de cardinalitate MICĂ, deci e mic el însuși, și
+    # transformă `COUNT(DISTINCT agent_id)` dintr-o scanare a tabelului într-una a
+    # index-ului. Fără el, numitorul ar costa O(rânduri) la fiecare eveniment,
+    # adică exact forma respinsă la M1 — doar mutată de pe hash pe agent.
+    """
+    CREATE INDEX IF NOT EXISTS idx_prevalence_agent ON prevalence (agent_id)
+    """,
+    # Starea memoriei la DESCHIDEREA unei rulări (M5).
+    #
+    # Registrul de prevalență nu se amprentează: se schimbă în timpul rulării,
+    # deci o amprentă ar fi falsă înainte ca rularea să se termine. Ce se poate
+    # declara e poziția de plecare. Fără ea, două rulări cu aceleași evenimente și
+    # memorii de plecare diferite ar publica cifre incomparabile, fără ca nimic să
+    # spună de ce.
+    """
+    CREATE TABLE IF NOT EXISTS run_prevalence (
+        run_id          TEXT NOT NULL PRIMARY KEY,
+        recorded_at     TEXT NOT NULL,
+        distinct_hashes INTEGER NOT NULL,
+        agents          INTEGER NOT NULL
+    )
+    """,
 )
 
 
@@ -583,6 +637,157 @@ def run_snapshot(run_id: str) -> Optional[Dict[str, Any]]:
     consemnate = run_snapshots(run_id)
 
     return consemnate[0] if consemnate else None
+
+
+def record_and_count_sighting(
+    sha256: bytes, agent_id: str, seen_at: str
+) -> Dict[str, Any]:
+    """
+    Consemnează că mașina asta a văzut conținutul ăsta, apoi întoarce prevalența.
+
+    Scrierea și citirea stau în ACEEAȘI funcție și sub același lacăt, deliberat.
+    Decizia M6 — se înregistrează întâi, se citește după, deci endpoint-ul care
+    raportează se numără pe sine — devine astfel o proprietate a structurii, nu o
+    convenție pe care apelantul trebuie s-o țină minte. Separate, ordinea corectă
+    ar fi fost o notă în documentație, iar prima mașină ar fi primit `0` la prima
+    inversare, indistinct de „n-a fost numărată".
+
+    A doua vedere a aceluiași fișier pe aceeași mașină NU adaugă un rând: doar
+    împrospătează `last_seen`. Prevalența numără mașini, nu atingeri — iar
+    distincția e chiar diferența dintre „fișierul e răspândit în parc" și „o
+    mașină îl rescrie des".
+    """
+    hash_brut = bytes(sha256)
+
+    with _lock:
+        connection = _connection_locked()
+
+        try:
+            connection.execute(
+                "INSERT INTO prevalence (sha256, agent_id, first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (sha256, agent_id) DO UPDATE SET "
+                "last_seen = excluded.last_seen",
+                (hash_brut, agent_id, seen_at, seen_at),
+            )
+            connection.commit()
+
+            row = connection.execute(
+                "SELECT COUNT(*), MIN(first_seen) FROM prevalence WHERE sha256 = ?",
+                (hash_brut,),
+            ).fetchone()
+        except sqlite3.Error as error:
+            raise EventStoreError(f"Could not record a sighting: {error}") from error
+
+    return {"agents": row[0], "first_seen": row[1]}
+
+
+def prevalence_of(sha256: bytes) -> Dict[str, Any]:
+    """
+    Prevalența unui hash, fără să înregistreze nimic. Pentru diagnostic și cifre.
+
+    Cheia primară `(sha256, agent_id)` face din asta o citire de prefix, nu o
+    scanare.
+    """
+    with _lock:
+        connection = _connection_locked()
+
+        row = connection.execute(
+            "SELECT COUNT(*), MIN(first_seen) FROM prevalence WHERE sha256 = ?",
+            (bytes(sha256),),
+        ).fetchone()
+
+    return {"agents": row[0], "first_seen": row[1]}
+
+
+def park_agents() -> int:
+    """
+    Câte mașini au raportat vreodată un fișier cu hash.
+
+    Numitorul lui `agents`: „3 mașini" înseamnă altceva într-un parc de 5 decât
+    în unul de 500. Se derivă din registru, NU din inventarul de agenți — acela
+    trăiește în memoria procesului și se golește la repornire, deci numitorul ar
+    scădea fără ca parcul să se micșoreze.
+    """
+    with _lock:
+        connection = _connection_locked()
+
+        (count,) = connection.execute(
+            "SELECT COUNT(DISTINCT agent_id) FROM prevalence"
+        ).fetchone()
+
+    return count
+
+
+def prevalence_state() -> Dict[str, int]:
+    """Starea memoriei parcului ACUM: hash-uri distincte și mașini distincte."""
+    with _lock:
+        connection = _connection_locked()
+
+        (hashes,) = connection.execute(
+            "SELECT COUNT(DISTINCT sha256) FROM prevalence"
+        ).fetchone()
+        (agents,) = connection.execute(
+            "SELECT COUNT(DISTINCT agent_id) FROM prevalence"
+        ).fetchone()
+
+    return {"distinct_hashes": hashes, "agents": agents}
+
+
+def record_run_prevalence(
+    run_id: str, recorded_at: str, distinct_hashes: int, agents: int
+) -> bool:
+    """
+    Consemnează poziția de plecare a memoriei pentru o rulare. O singură dată.
+
+    Se scrie ÎNAINTE ca primul eveniment al rulării să fie înregistrat, altfel
+    „starea la început" ar include chiar evenimentul care a declanșat-o.
+    """
+    with _lock:
+        connection = _connection_locked()
+
+        try:
+            cursor = connection.execute(
+                "INSERT INTO run_prevalence "
+                "(run_id, recorded_at, distinct_hashes, agents) VALUES (?, ?, ?, ?) "
+                "ON CONFLICT (run_id) DO NOTHING",
+                (run_id, recorded_at, distinct_hashes, agents),
+            )
+            connection.commit()
+        except sqlite3.Error as error:
+            raise EventStoreError(
+                f"Could not record the prevalence baseline of run {run_id!r}: {error}"
+            ) from error
+
+        return cursor.rowcount == 1
+
+
+def run_prevalences(run_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    """Pozițiile de plecare consemnate: ale unei rulări, sau ale tuturor."""
+    with _lock:
+        connection = _connection_locked()
+
+        if run_id is None:
+            rows = connection.execute(
+                "SELECT run_id, recorded_at, distinct_hashes, agents "
+                "FROM run_prevalence ORDER BY recorded_at, run_id"
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                "SELECT run_id, recorded_at, distinct_hashes, agents "
+                "FROM run_prevalence WHERE run_id = ?",
+                (run_id,),
+            ).fetchall()
+
+    return [
+        {
+            "run_id": row[0],
+            "recorded_at": row[1],
+            "distinct_hashes": row[2],
+            "agents": row[3],
+        }
+        for row in rows
+    ]
 
 
 def close() -> None:

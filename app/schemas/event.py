@@ -265,6 +265,34 @@ class EventReputation(BaseModel):
     source: Optional[str] = None
 
 
+class EventPrevalence(BaseModel):
+    """
+    Cat de raspandit e conteinutul in parcul propriu — memoria a doua.
+
+    Bloc SEPARAT de `reputation`, nu camp inauntrul lui, si nu din simetrie:
+    sursele sunt diferite. `reputation` vine dintr-un instantaneu sigilat, extern
+    si imutabil, iar `disposition` e o bijectie cu cele doua axe ale lui. Numarul
+    de aici vine din evenimentele parcului si se schimba IN TIMPUL rularii. Pus
+    inauntru, ar face vocabularul dispozitiei sa nu mai descrie ce pretinde.
+
+    Ce circula e dovada, nu scor. Un prag aici ar lasa fara obiect banda de
+    incertitudine (§L2.7) si ar da sistemului doua mecanisme de decizie care se
+    contrazic pe tacute — aceeasi linie ca la depozit.
+
+    `agents` INCLUDE masina care tocmai a raportat: intrebarea e pe cate masini
+    se stie ca exista continutul acum, iar aceea e una dintre ele. `park_agents`
+    e numitorul fara de care numaratorul nu se poate citi — trei masini inseamna
+    altceva intr-un parc de cinci decat in unul de cinci sute.
+
+    Valoarea e o FOTOGRAFIE, nu o proprietate a fisierului: e ce stia serverul
+    cand a raspuns. Prevalenta curenta a unui hash e o interogare separata.
+    """
+
+    agents: int
+    park_agents: int
+    first_seen: Optional[str] = None
+
+
 class EventResponse(BaseModel):
     """
     Evenimentul stocat, asa cum pleaca inapoi spre agent.
@@ -299,6 +327,7 @@ class EventResponse(BaseModel):
     measurements: Optional[EventMeasurements] = None
     disclosure: Optional[EventDisclosure] = None
     reputation: Optional[EventReputation] = None
+    prevalence: Optional[EventPrevalence] = None
     description: Optional[str] = None
     occurred_at: Optional[str] = None
     received_at: Optional[str] = None
