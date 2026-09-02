@@ -21,6 +21,7 @@ De ce există acest fișier:
 
 import json
 import os
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -376,4 +377,130 @@ def test_the_peer_repository_carries_the_same_shared_document(document_name: str
     ), (
         f"Exemplarele de {document_name} diferă între server și "
         f"{peer_repo.name}. Copiază versiunea nouă în repo-ul rămas în urmă."
+    )
+
+
+# Toate documentele care trebuie să fie identice în cele două repo-uri, inclusiv
+# contractul de fir. Verificările de mai sus compară exemplarele de pe DISC;
+# lista asta e pentru cea care compară ce e COMIS.
+ALL_SHARED_DOCUMENTS = {
+    "wire-contract.json": CONTRACT_RELATIVE_PATH,
+    **SHARED_DOCUMENTS,
+}
+
+
+def _is_git_work_tree(repo_root: Path) -> bool:
+    """Dacă `repo_root` e o clonă git pe care se poate întreba ce s-a comis."""
+    try:
+        finished = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--git-dir"],
+            capture_output=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    return finished.returncode == 0
+
+
+def _committed_text(repo_root: Path, relative_path: Path) -> Optional[str]:
+    """
+    Conținutul COMIS al unui fișier, la HEAD. `None` dacă nu e comis deloc.
+
+    Terminatoarele de linie se normalizează ca la citirea de pe disc: blob-ul din
+    git e de obicei cu LF, iar copia din arborele de lucru poate fi cu CRLF pe
+    Windows. O diferență de sfârșit de linie n-are nicio legătură cu ce spune
+    documentul.
+    """
+    finished = subprocess.run(
+        ["git", "-C", str(repo_root), "show", f"HEAD:{relative_path.as_posix()}"],
+        capture_output=True,
+        timeout=30,
+    )
+
+    if finished.returncode != 0:
+        return None
+
+    return finished.stdout.decode("utf-8-sig", "replace").replace("\r\n", "\n")
+
+
+def _first_difference(committed: str, on_disk: str, width: int = 100) -> str:
+    """Prima linie în care cele două exemplare diferă, ca mesaj de o strofă."""
+    linii_comise = committed.split("\n")
+    linii_disc = on_disk.split("\n")
+
+    for numar, (comisa, pe_disc) in enumerate(zip(linii_comise, linii_disc), start=1):
+        if comisa != pe_disc:
+            return (
+                f"  prima diferență, linia {numar}:\n"
+                f"    comis:  {comisa[:width]}\n"
+                f"    pe disc:{pe_disc[:width]}"
+            )
+
+    return (
+        f"  Liniile comune sunt identice; diferă lungimea: "
+        f"{len(linii_comise)} linii comise față de {len(linii_disc)} pe disc."
+    )
+
+
+@pytest.mark.parametrize("document_name", sorted(ALL_SHARED_DOCUMENTS))
+def test_the_peer_repository_has_committed_its_copy(document_name: str):
+    """
+    Nu ajunge ca exemplarele să fie identice pe disc: trebuie să fie și COMISE.
+
+    De ce e nevoie de verificarea asta, pe lângă cele de mai sus:
+        Toate celelalte compară fișiere din arborele de lucru. Un exemplar
+        copiat în repo-ul pereche și lăsat necomis le trece pe toate — discul e
+        sincronizat, deci suita e verde — dar ce ajunge pe GitHub e o singură
+        parte a schimbării. Cine clonează repo-ul rămas în urmă primește un
+        contract cu o versiune mai veche, iar garda cea mai puternică din suită a
+        tăcut exact în cazul pentru care există.
+
+        Nu e o grijă teoretică: s-a întâmplat de două ori la rând la P2.3 și
+        P2.4, iar amândouă au fost descoperite cu ochiul, nu de teste.
+
+    De ce se verifică repo-ul PERECHE și nu al nostru:
+        Exemplarul local e, prin definiție, în curs de modificare când rulează
+        suita — se comite imediat după. Cel al perechii trebuie însă să fie deja
+        așezat: regula e „aceeași sesiune, ambele repo-uri", iar ordinea care o
+        face verificabilă e „perechea întâi".
+
+    Absența lui git nu e eșec, ci skip cu motivul spus: repo-ul pereche poate fi
+    o copie dezarhivată, iar atunci întrebarea „ce s-a comis" n-are răspuns.
+    """
+    relative_path = ALL_SHARED_DOCUMENTS[document_name]
+    peer_repo = require_peer_repo(
+        f"dacă exemplarul de {document_name} din repo-ul pereche e comis"
+    )
+
+    if not _is_git_work_tree(peer_repo):
+        pytest.skip(
+            f"{peer_repo} nu e o clonă git, deci nu se poate afla ce exemplar de "
+            f"{document_name} a fost comis acolo. Verificarea de pe disc rămâne "
+            f"în picioare; asta nu."
+        )
+
+    committed = _committed_text(peer_repo, relative_path)
+
+    assert committed is not None, (
+        f"{peer_repo.name} nu are {document_name} comis la HEAD, deși fișierul "
+        f"există pe disc. Cine clonează repo-ul acela nu primește documentul "
+        f"deloc."
+    )
+
+    pe_disc = _read_shared_document(peer_repo, relative_path)
+
+    # Egalitatea se calculează ÎNAINTE de `assert`, dinadins. Pe un `assert a == b`
+    # cu două șiruri de sute de kiloocteți, pytest tipărește o diferență de sute
+    # de linii în care cauza — un singur număr de versiune — se pierde. Un boolean
+    # nu poate fi despicat, deci rămâne mesajul, plus prima linie care diferă.
+    identice = committed == pe_disc
+
+    assert identice, (
+        f"Exemplarul de {document_name} din {peer_repo.name} e modificat pe disc "
+        f"dar necomis. Pe disc cele două repo-uri sunt sincronizate, deci restul "
+        f"suitei trece — dar ce se publică e doar jumătatea comisă, iar cealaltă "
+        f"parte rămâne la o versiune mai veche. Comite întâi în "
+        f"{peer_repo.name}, apoi aici.\n"
+        f"{_first_difference(committed, pe_disc)}"
     )
