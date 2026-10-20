@@ -294,12 +294,18 @@ def register_agent(agent_request: AgentRegisterRequest) -> Dict[str, Any]:
             new_hash = agent_data.get("machine_id_hash")
             new_type = agent_data.get("machine_id_type")
 
-            # Conflict doar dacă AMBELE părți au o identitate de mașină non-goală
-            # și aceasta diferă (hash sau tip). Înregistrările legacy fără hash
-            # rămân actualizabile, ca până acum.
+            # Odată legat de o identitate de mașină, agent_id-ul nu mai acceptă
+            # decât exact acea identitate (hash ȘI tip). O cerere FĂRĂ hash e tot
+            # conflict: altfel ar fi fost calea pe care o mașină fără
+            # identificator stabil suprascrie silențios hostname-ul și IP-ul
+            # alteia. Pierderea legitimă a identității nu ajunge aici — agentul
+            # cade pe MAC înainte de None, iar MAC-ul dădea deja 409 prin tipul
+            # diferit. Singura direcție permisă rămâne cea legacy: înregistrarea
+            # existentă fără hash e actualizabilă, cu sau fără hash nou.
+            # Ordinea agent_id -> hash e deliberată: invers, cererea (A, H2), cu
+            # H2 al agentului B, l-ar redenumi pe B în A peste înregistrarea lui A.
             if (
                 existing_hash and existing_hash.strip()
-                and new_hash and new_hash.strip()
                 and (existing_hash, existing_type) != (new_hash, new_type)
             ):
                 raise AgentIdConflictError(agent_id)

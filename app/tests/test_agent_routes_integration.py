@@ -167,3 +167,69 @@ def test_agents_without_machine_id_hash_do_not_collide():
 
     assert body["agent"]["registration_status"] == "created"
     assert set(svc.agents_store) == {"agent-1", "agent-2"}
+
+# --- Conflictul de identitate pe agent_id (issue #13) ---
+
+
+def _snapshot(agent_id: str) -> dict:
+    record = dict(svc.agents_store[agent_id])
+    record.pop("last_seen", None)
+    return record
+
+
+def test_same_agent_id_from_different_machine_is_rejected_with_409():
+    _register("agent-1", "windows_machine_guid", "hash-A")
+    original_key = client.issued_keys["agent-1"]
+    before = _snapshot("agent-1")
+
+    response = _register("agent-1", "windows_machine_guid", "hash-B")
+
+    assert response.status_code == 409, response.text
+    assert "agent_key" not in response.json()
+    assert _snapshot("agent-1") == before
+    # Cheia se emite doar după o înregistrare reușită: cea veche rămâne a lui A.
+    assert auth_service.agent_id_for_key(original_key) == "agent-1"
+
+
+def test_same_agent_id_without_machine_id_hash_is_rejected_with_409():
+    # Gaura închisă de #13: înainte, garda cerea hash pe AMBELE părți, iar o
+    # mașină fără identificator stabil suprascria silențios hostname-ul lui A.
+    _register("agent-1", "windows_machine_guid", "hash-A")
+    before = _snapshot("agent-1")
+
+    response = _register("agent-1", "unknown", None)
+
+    assert response.status_code == 409, response.text
+    assert _snapshot("agent-1") == before
+
+
+def test_same_agent_id_same_machine_updates_in_place():
+    _register("agent-1", "windows_machine_guid", "hash-A")
+
+    response = _register("agent-1", "windows_machine_guid", "hash-A")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["agent"]["registration_status"] == "updated_by_agent_id"
+    assert list(svc.agents_store) == ["agent-1"]
+
+
+def test_legacy_record_without_hash_adopts_machine_identity():
+    _register("agent-1", "unknown", None)
+
+    response = _register("agent-1", "windows_machine_guid", "hash-A")
+
+    assert response.status_code == 200, response.text
+    assert svc.agents_store["agent-1"]["machine_id_hash"] == "hash-A"
+
+
+def test_taken_agent_id_with_another_agents_hash_moves_nothing():
+    # Motivul pentru care ordinea rămâne agent_id -> hash: căutat întâi după
+    # hash, B ar fi fost redenumit în agent-1, peste înregistrarea lui A.
+    _register("agent-1", "windows_machine_guid", "hash-A")
+    _register("agent-2", "windows_machine_guid", "hash-B")
+    before = {agent_id: _snapshot(agent_id) for agent_id in ("agent-1", "agent-2")}
+
+    response = _register("agent-1", "windows_machine_guid", "hash-B")
+
+    assert response.status_code == 409, response.text
+    assert {agent_id: _snapshot(agent_id) for agent_id in ("agent-1", "agent-2")} == before
