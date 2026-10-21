@@ -7,6 +7,7 @@ from app.services.event_service import (
     create_event,
     get_all_events,
     get_events_of_all_runs,
+    without_operator_only_events,
 )
 from app.services.agent_service import agent_exists
 
@@ -88,8 +89,11 @@ def list_events(scope: RunScope = RunScopeDependency) -> dict:
     endpoint-uri. Cheia unui agent NU deschide ruta asta, dar nici nu o închide
     pentru altcineva; separarea drepturilor de citire de cele de scriere e
     pasul următor declarat, nu unul făcut aici.
+
+    Ce lipsește deliberat: tipurile din OPERATOR_ONLY_EVENT_TYPES. Cât timp
+    ruta e publică, ea nu are voie să spună care endpoint-uri sunt oarbe.
     """
-    events = (
+    events = without_operator_only_events(
         get_events_of_all_runs()
         if scope.covers_all_runs
         else get_all_events(scope.run_id)

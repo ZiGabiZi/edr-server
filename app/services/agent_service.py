@@ -99,6 +99,37 @@ class HeartbeatResult:
     sequence: Optional[int] = None
     instance_id: Optional[str] = None
     continuity_lost: bool = False
+    monitoring: Optional[str] = None
+    monitoring_previous: Optional[str] = None
+    monitoring_changed: bool = False
+
+
+def _apply_monitoring(agent: Dict[str, Any], monitoring: Optional[str]) -> Optional[str]:
+    """
+    Scrie starea supravegherii pe înregistrare și întoarce valoarea veche.
+
+    Se suprascrie la fiecare heartbeat proaspăt, inclusiv cu None: valoarea
+    descrie heartbeat-ul curent, iar un build vechi care nu raportează nimic
+    nu are voie să moștenească "active" de la incarnarea dinaintea lui.
+    """
+    previous = agent.get("monitoring")
+    agent["monitoring"] = monitoring
+    return previous
+
+
+def _monitoring_transition_is_reportable(
+    previous: Optional[str], current: Optional[str]
+) -> bool:
+    """
+    Orice schimbare, cu o excepție: necunoscut -> "active", pornirea normală.
+
+    Prima stare non-active după (re)înregistrare se raportează chiar dacă
+    serverul n-a văzut niciuna înainte: registrul e volatil (METRICS.md §9.5),
+    deci după o repornire a serverului singura urmă a orbirii e evenimentul.
+    """
+    if previous == current:
+        return False
+    return not (previous is None and current == "active")
 
 
 class AgentIdConflictError(Exception):
@@ -111,6 +142,7 @@ def record_heartbeat(
     agent_id: str,
     sequence: Optional[int] = None,
     instance_id: Optional[str] = None,
+    monitoring: Optional[str] = None,
 ) -> HeartbeatResult:
     """
     Actualizează last_seen pentru agentul dat în mod atomic și evaluează continuitatea
@@ -154,6 +186,12 @@ def record_heartbeat(
     Contoarele cumulative restart_count / missed_heartbeats_total /
     failed_attempts_total / continuity_losses_total sunt persistate pe înregistrarea
     agentului pentru observabilitate.
+
+    Starea supravegherii (monitoring) se scrie doar din heartbeat-uri proaspete:
+    nu din pachetul reordonat (e informație mai veche decât cea stocată) și nu
+    din retransmisie (aceeași informație). NU atinge status-ul derivat:
+    "degraded" rămâne „heartbeat întârziat", iar un agent poate fi "online" și
+    orb în același timp.
     """
     with agents_lock:
         agent = agents_store.get(agent_id)
@@ -200,6 +238,7 @@ def record_heartbeat(
                 agent["restart_count"] = agent.get("restart_count", 0) + 1
                 agent["agent_instance_id"] = instance_id
                 agent["last_sequence"] = sequence
+                monitoring_previous = _apply_monitoring(agent, monitoring)
                 # failed_attempts rămâne 0: golul de secvență nu are sens peste
                 # granița dintre două incarnări. missed_heartbeats rămâne însă
                 # relevant — timpul cât endpoint-ul a fost neacoperit e real,
@@ -212,6 +251,11 @@ def record_heartbeat(
                     silence_seconds=silence_seconds,
                     sequence=sequence,
                     instance_id=instance_id,
+                    monitoring=monitoring,
+                    monitoring_previous=monitoring_previous,
+                    monitoring_changed=_monitoring_transition_is_reportable(
+                        monitoring_previous, monitoring
+                    ),
                 )
 
         failed_attempts = 0
@@ -266,6 +310,8 @@ def record_heartbeat(
                     )
                 agent["last_sequence"] = sequence
 
+        monitoring_previous = _apply_monitoring(agent, monitoring)
+
         return HeartbeatResult(
             agent=agent.copy(),
             restart_detected=False,
@@ -275,6 +321,11 @@ def record_heartbeat(
             sequence=sequence,
             instance_id=instance_id,
             continuity_lost=continuity_lost,
+            monitoring=monitoring,
+            monitoring_previous=monitoring_previous,
+            monitoring_changed=_monitoring_transition_is_reportable(
+                monitoring_previous, monitoring
+            ),
         )
 
 
@@ -380,6 +431,12 @@ def _derive_status(agent: Dict[str, Any]) -> str:
     return "offline"
 
 
+# Câmpuri de pe înregistrare care NU ies pe GET /api/agents, ruta publică de
+# inventar. monitoring spune care mașini sunt oarbe acum, adică unde poate
+# lucra un atacator nevăzut; se citește doar prin get_agents_monitoring().
+OPERATOR_ONLY_AGENT_FIELDS = ("monitoring",)
+
+
 def get_agents() -> List[Dict[str, Any]]:
     result = []
     with agents_lock:
@@ -388,10 +445,33 @@ def get_agents() -> List[Dict[str, Any]]:
 
         for agent in agents_snapshot:
             agent_view = agent.copy()
+            for field in OPERATOR_ONLY_AGENT_FIELDS:
+                agent_view.pop(field, None)
             agent_view["status"] = _derive_status(agent_view)
             result.append(agent_view)
             
         return result
+
+
+def get_agents_monitoring() -> List[Dict[str, Any]]:
+    """
+    Starea supravegherii per agent, pentru operator.
+
+    status și monitoring stau alături, dar nu se amestecă: "online" spune că
+    agentul răspunde, monitoring spune dacă vede ceva. None = necunoscut
+    (build vechi care nu raportează câmpul), nu oprit.
+    """
+    with agents_lock:
+        return [
+            {
+                "agent_id": agent.get("agent_id"),
+                "hostname": agent.get("hostname"),
+                "status": _derive_status(agent),
+                "monitoring": agent.get("monitoring"),
+                "monitored": agent.get("monitoring") == "active",
+            }
+            for agent in agents_store.values()
+        ]
 
 
 def agent_exists(agent_id: str) -> bool:

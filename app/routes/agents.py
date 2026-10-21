@@ -1,11 +1,22 @@
 from typing import Optional
 
-from fastapi import APIRouter, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
+from app.routes.scope import RunScope, RunScopeDependency
 from app.schemas.agent import AgentRegisterRequest
-from app.security import authorize_registration
+from app.security import authorize_registration, require_operator_secret
 from app.services import auth_service
-from app.services.agent_service import AgentIdConflictError, get_agents, register_agent
+from app.services.agent_service import (
+    AgentIdConflictError,
+    get_agents,
+    get_agents_monitoring,
+    register_agent,
+)
+from app.services.event_service import (
+    MONITORING_CHANGED_EVENT_TYPE,
+    get_all_events,
+    get_events_of_all_runs,
+)
 
 router = APIRouter(
     prefix="/api/agents",
@@ -79,4 +90,52 @@ def list_agents() -> dict:
     return {
         "count": len(agents),
         "agents": agents,
+    }
+
+
+@router.get("/monitoring")
+def list_agents_monitoring(
+    scope: RunScope = RunScopeDependency,
+    _: None = Depends(require_operator_secret),
+) -> dict:
+    """
+    Care endpoint-uri sunt supravegheate acum și ce tranziții a avut rularea.
+
+    De ce cere secretul de operator, când GET /api/agents nu cere nimic:
+        Inventarul public spune ce mașini există. Ruta asta spune care dintre
+        ele sunt oarbe — o hartă de țintire, nu un inventar. Gaura de citire
+        publică e declarată (edr-server#9), dar n-are voie să crească cu
+        informația cea mai utilă unui atacator. Secretul de înrolare e aceeași
+        reutilizare declarată ca la POST /api/runs/{label}; secretul de analist
+        o înlocuiește odată cu închiderea celorlalte rute de citire.
+
+    De ce și tranzițiile, nu doar starea curentă:
+        Registrul de agenți e volatil (METRICS.md §9.5). Pentru o rulare deja
+        încheiată, starea curentă nu mai spune nimic; evenimentele persistate,
+        cu eticheta rulării, spun ce endpoint a fost orb și când.
+
+    Ce NU garantează: un "active" e afirmația agentului. Prinde defecte, nu
+    sabotaj — vezi contracts/METRICS.md §8.
+    """
+    events = (
+        get_events_of_all_runs()
+        if scope.covers_all_runs
+        else get_all_events(scope.run_id)
+    )
+    transitions = [
+        {
+            "agent_id": event["agent_id"],
+            "agent_instance_id": event["agent_instance_id"],
+            "occurred_at": event["occurred_at"],
+            "description": event["description"],
+            "run_id": event["run_id"],
+        }
+        for event in events
+        if event["event_type"] == MONITORING_CHANGED_EVENT_TYPE
+    ]
+
+    return {
+        "run": scope.declaration(),
+        "agents": get_agents_monitoring(),
+        "transitions": transitions,
     }

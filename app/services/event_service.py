@@ -123,6 +123,21 @@ def create_event(event: EventCreateRequest) -> dict:
     return stored
 
 
+# Emis de server la schimbarea câmpului monitoring din heartbeat.
+MONITORING_CHANGED_EVENT_TYPE = "agent_monitoring_changed"
+
+# Tipuri care NU apar pe rutele de citire publice (GET /api/events). Lista
+# endpoint-urilor oarbe e o hartă de țintire: spune unde poate lucra un atacator
+# fără să fie văzut. Evenimentele rămân în depozit, cu eticheta rulării, și se
+# citesc prin GET /api/agents/monitoring, cu secretul de operator.
+OPERATOR_ONLY_EVENT_TYPES = frozenset({MONITORING_CHANGED_EVENT_TYPE})
+
+
+def without_operator_only_events(events: List[dict]) -> List[dict]:
+    """Filtrul rutelor publice. Metrica și măsurătoarea citesc depozitul întreg."""
+    return [e for e in events if e.get("event_type") not in OPERATOR_ONLY_EVENT_TYPES]
+
+
 def get_all_events(run_id: Optional[str] = None) -> List[dict]:
     """
     Evenimentele vizibile acum. Implicit, cele ale rulării CURENTE.

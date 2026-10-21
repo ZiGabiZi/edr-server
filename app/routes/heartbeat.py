@@ -3,7 +3,11 @@ from app.schemas.heartbeat import HeartbeatRequest, HeartbeatDirective, Heartbea
 from app.schemas.event import EventCreateRequest
 from app.security import authenticated_agent_id, require_identity_match
 from app.services.agent_service import record_heartbeat, HEARTBEAT_INTERVAL_SECONDS
-from app.services.event_service import create_event, utc_now
+from app.services.event_service import (
+    MONITORING_CHANGED_EVENT_TYPE,
+    create_event,
+    utc_now,
+)
 
 router = APIRouter(prefix="/api/agents", tags=["Heartbeat"])
 
@@ -27,7 +31,9 @@ def receive_heartbeat(
     # ca răspunsul 'unregistered' + directiva 'reregister' să rămână accesibil.
     require_identity_match(caller_agent_id, agent_id)
 
-    result = record_heartbeat(agent_id, body.sequence, body.agent_instance_id)
+    result = record_heartbeat(
+        agent_id, body.sequence, body.agent_instance_id, body.monitoring
+    )
 
     if result.agent is None:
         # Agentul a pierdut înregistrarea (ex: server restartat, store șters).
@@ -74,6 +80,27 @@ def receive_heartbeat(
                     f"be distinguished from a reordered packet; the sequence baseline "
                     f"was reset so continuity tracking can resume. Upgrade the agent "
                     f"to a build that sends agent_instance_id."
+                ),
+            )
+        )
+
+    if result.monitoring_changed:
+        # Emis de server, ca agent_restart, și nu de agent: când supravegherea
+        # cade din cauza spool-ului, spool-ul e chiar canalul care lipsește.
+        # Evenimentul intră în depozitul persistent cu eticheta rulării
+        # curente, deci o rulare de măsurătoare își poate afla endpoint-urile
+        # oarbe și după ce registrul volatil de agenți s-a golit. Un endpoint
+        # orb produce zero evenimente de fișier și arată exact ca unul liniștit.
+        create_event(
+            EventCreateRequest(
+                agent_id=agent_id,
+                event_type=MONITORING_CHANGED_EVENT_TYPE,
+                agent_instance_id=result.instance_id,
+                occurred_at=utc_now(),
+                description=(
+                    f"Agent monitoring changed: "
+                    f"{result.monitoring_previous or 'not_reported'} -> "
+                    f"{result.monitoring or 'not_reported'}."
                 ),
             )
         )

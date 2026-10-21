@@ -1,7 +1,12 @@
-from pydantic import BaseModel
+import logging
+
+from pydantic import BaseModel, field_validator
 from typing import Optional
 
 from app.schemas.wire import WireModel
+
+
+logger = logging.getLogger(__name__)
 
 class HeartbeatRequest(WireModel):
     agent_id: str
@@ -25,6 +30,52 @@ class HeartbeatRequest(WireModel):
     # vechi: în absența ei, continuitatea nu poate fi garantată (vezi record_heartbeat).
 
     agent_instance_id: Optional[str] = None
+
+    # Starea supravegherii, recalculată de agent la fiecare heartbeat (v10).
+    # Heartbeat-ul e singurul canal care merge și când spool-ul a căzut, deci
+    # e singurul care poate spune „sunt viu, dar orb". Absența înseamnă
+    # necunoscut (build vechi), nu oprit. Vezi normalize_monitoring.
+    monitoring: Optional[str] = None
+
+    @field_validator("monitoring")
+    @classmethod
+    def _normalize_monitoring(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_monitoring(value)
+
+
+# Vocabularul închis al câmpului monitoring. Orice valoare în afară de
+# "active" înseamnă că endpoint-ul NU e supravegheat.
+MONITORING_ACTIVE = "active"
+MONITORING_STATES = frozenset(
+    {MONITORING_ACTIVE, "spool_unavailable", "monitor_unavailable", "stopped"}
+)
+MONITORING_UNRECOGNIZED = "unrecognized"
+
+
+def normalize_monitoring(value: Optional[str]) -> Optional[str]:
+    """
+    Valoare din afara vocabularului -> "unrecognized", nu 422.
+
+    Un Literal ar fi respins-o cu 422, iar la heartbeat 422 înseamnă că agentul
+    nu mai trimite niciun heartbeat până la repornire (app/schemas/wire.py).
+    Un agent mai nou, cu o stare pe care serverul n-o cunoaște încă, ar apărea
+    atunci mort în loc de orb. "unrecognized" păstrează heartbeat-ul și rămâne
+    de partea sigură: nu e "active", deci endpoint-ul nu se socotește
+    supravegheat. Valoarea brută nu se stochează, doar se loghează.
+    """
+    if value is None or value in MONITORING_STATES:
+        return value
+
+    logger.warning(
+        "HeartbeatRequest a primit monitoring=%r, în afara vocabularului %s. "
+        "Stocat ca %r.",
+        value[:64],
+        sorted(MONITORING_STATES),
+        MONITORING_UNRECOGNIZED,
+    )
+    return MONITORING_UNRECOGNIZED
+
+
 class HeartbeatDirective(BaseModel):
     """
     Directive pe care serverul le trimite agentului la fiecare heartbeat.
