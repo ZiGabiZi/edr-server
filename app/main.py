@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import FastAPI
 
 from app.routes import agents, events, heartbeat, metrics, runs
-from app.services import reputation_store
+from app.services import event_store, reputation_store
 from app.services.reputation_disposition import REPUTATION_UNAVAILABLE
 from app.wire_middleware import install_wire_accounting
 
@@ -112,6 +112,13 @@ def warm_reputation_snapshot() -> None:
 async def lifespan(_: FastAPI):
     warm_reputation_snapshot()
     yield
+    # La oprire, închiderea ultimei conexiuni face checkpoint: SQLite mută
+    # jurnalul WAL în fișierul principal și îl golește. Fără ea, baza rămâne
+    # pe disc ca 4 KB de .db plus tot istoricul în .db-wal — durabil, datorită
+    # synchronous=FULL, dar dependent de un fișier auxiliar pe care un backup
+    # care copiază doar .db îl pierde.
+    event_store.close()
+    reputation_store.close()
 
 
 app = FastAPI(
