@@ -15,10 +15,17 @@ Cele trei invariante care devin cerințe de corectitudine odată cu discul:
        refolosire s-ar goli exact la repornirea care face refolosirea probabilă.
 """
 
+import shutil
+import sqlite3
+from contextlib import closing
+
 import pytest
+from fastapi.testclient import TestClient
 
 import app.services.event_store as event_store
 import app.services.measurement_run as measurement_run
+import app.services.reputation_store as reputation_store
+from app.main import app
 
 
 @pytest.fixture
@@ -76,6 +83,36 @@ def test_events_survive_a_restart(store_on_disk):
     stored = event_store.all_events()
 
     assert [event["client_event_id"] for event in stored] == ["evt-1", "evt-2"]
+
+
+def test_shutdown_leaves_every_event_in_the_main_file(store_on_disk, tmp_path):
+    """
+    Oprirea serverului mută jurnalul WAL în fișierul principal.
+
+    Testul copiază DOAR .db, exact ce ar face un backup naiv, și citește
+    copia. Fără închiderea din lifespan, SQLite nu face checkpoint sub
+    pragul de ~4 MB, deci copia n-ar avea nici măcar tabela: toate
+    evenimentele ar fi rămas în .db-wal.
+    """
+    db_path = tmp_path / "masuratoare.db"
+    wal_path = tmp_path / "masuratoare.db-wal"
+
+    with TestClient(app):
+        event_store.insert_event(_event("evt-1"))
+
+        # Premisa: evenimentul e încă doar în jurnal, nu în fișierul principal.
+        assert wal_path.exists() and wal_path.stat().st_size > 0
+
+    assert not wal_path.exists()
+    assert reputation_store._connection is None
+
+    backup = tmp_path / "backup.db"
+    shutil.copyfile(db_path, backup)
+
+    with closing(sqlite3.connect(backup)) as connection:
+        (count,) = connection.execute("SELECT COUNT(*) FROM events").fetchone()
+
+    assert count == 1
 
 
 def test_the_stored_event_comes_back_exactly_as_it_went_in(store_on_disk):
