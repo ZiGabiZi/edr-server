@@ -1,0 +1,45 @@
+# Serverul EDR ca serviciu systemd.
+#
+# De ce serviciu și nu uvicorn pornit de mână: un EDR real nu depinde de un
+# terminal deschis. systemd îl pornește la boot, îl repornește dacă pică și,
+# la shutdown, îi trimite SIGTERM și așteaptă — adică lifespan-ul din
+# app/main.py apucă să închidă bazele, iar WAL-ul ajunge în edr_server.db.
+#
+# Instalare (o singură dată, din deploy/setup-vm.sh):
+#   sudo install -m 644 deploy/edr-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now edr-server
+#
+# Operare:
+#   sudo systemctl restart edr-server     după o modificare de cod
+#   journalctl -u edr-server -f           ieșirea live (server.log rămâne și el)
+
+[Unit]
+Description=EDR Server (FastAPI / uvicorn)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gabi
+Group=gabi
+WorkingDirectory=/home/gabi/edr-server
+# Fără EDR_ENROLLMENT_SECRET: serverul citește enrollment_secret.txt, la fel
+# ca la pornirea manuală, deci secretul nu ajunge în unit și nici în journal.
+ExecStart=/home/gabi/edr-server/.venv/bin/python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+Restart=on-failure
+RestartSec=3
+# Oprirea face checkpoint pe edr_server.db; 30 s îi lasă loc și când WAL-ul
+# e mare. La pornire nu există un echivalent: cu Type=simple, systemd
+# consideră serviciul pornit imediat ce lansează procesul, deci nu știe când
+# serverul răspunde efectiv (~10 s cald, ~30 s la rece, cât durează amprenta
+# pe reputation.db). Asta o verifică deploy/setup-vm.sh, prin /health.
+TimeoutStopSec=30
+
+# Restricții care nu cer nimic de la aplicație: nu-și poate ridica
+# privilegiile și nu poate scrie în /usr, /boot sau /etc.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
