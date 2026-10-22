@@ -1,10 +1,13 @@
 """
-Teste pentru câmpul monitoring din heartbeat (contract v10).
+Teste pentru câmpul monitoring din heartbeat (contract v10, "partial" din v11).
 
 Problema închisă: un agent al cărui spool sau FileMonitor nu pornește, ori al
 cărui pipeline moare în timpul rulării, rămâne "online" fără să supravegheze
 nimic, iar serverul nu află. Pentru un EDR e cea mai proastă formă de eșec:
 endpoint-ul orb arată sănătos și, într-o măsurătoare, arată liniștit.
+
+v11: un agent cu doar o parte din directoarele configurate raporta "active".
+Acum raportează "partial", care nu se socotește supravegheat.
 """
 import logging
 
@@ -92,6 +95,36 @@ def test_a_blind_agent_stays_online():
     assert listed["status"] == "online"
     assert listed["monitoring"] == "monitor_unavailable"
     assert listed["monitored"] is False
+
+
+def test_partial_is_a_known_state_that_does_not_count_as_monitored(caplog):
+    """O zonă supravegheată doar în parte nu e una supravegheată."""
+    _register()
+
+    with caplog.at_level(logging.WARNING):
+        response = _heartbeat(monitoring="partial")
+
+    assert response.status_code == 200
+    listed = _listed()
+    assert listed["monitoring"] == "partial"
+    assert listed["monitored"] is False
+    assert listed["status"] == "online"
+    assert "vocabularului" not in caplog.text
+
+
+def test_losing_a_directory_emits_a_transition():
+    """
+    Repornit cu un director lipsă: active -> partial lasă urmă în rulare,
+    ca măsurătoarea să poată exclude sau declara endpoint-ul.
+    """
+    _register()
+
+    _heartbeat(sequence=1, instance_id="inst-A", monitoring="active")
+    _heartbeat(sequence=1, instance_id="inst-B", monitoring="partial")
+
+    (event,) = _monitoring_events()
+    assert "active -> partial" in event["description"]
+    assert event["run_id"] == measurement_run.current_run_id()
 
 
 def test_an_unknown_value_is_accepted_but_never_counts_as_active(caplog):

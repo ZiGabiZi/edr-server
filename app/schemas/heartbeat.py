@@ -31,7 +31,7 @@ class HeartbeatRequest(WireModel):
 
     agent_instance_id: Optional[str] = None
 
-    # Starea supravegherii, recalculată de agent la fiecare heartbeat (v10).
+    # Starea supravegherii, recalculată de agent la fiecare heartbeat (v10, v11).
     # Heartbeat-ul e singurul canal care merge și când spool-ul a căzut, deci
     # e singurul care poate spune „sunt viu, dar orb". Absența înseamnă
     # necunoscut (build vechi), nu oprit. Vezi normalize_monitoring.
@@ -44,10 +44,18 @@ class HeartbeatRequest(WireModel):
 
 
 # Vocabularul închis al câmpului monitoring. Orice valoare în afară de
-# "active" înseamnă că endpoint-ul NU e supravegheat.
+# "active" înseamnă că endpoint-ul NU e supravegheat complet. "partial" (v11):
+# pipeline-ul merge, dar unele directoare configurate lipseau la pornire sau
+# s-au pierdut în timpul rulării.
 MONITORING_ACTIVE = "active"
 MONITORING_STATES = frozenset(
-    {MONITORING_ACTIVE, "spool_unavailable", "monitor_unavailable", "stopped"}
+    {
+        MONITORING_ACTIVE,
+        "partial",
+        "spool_unavailable",
+        "monitor_unavailable",
+        "stopped",
+    }
 )
 MONITORING_UNRECOGNIZED = "unrecognized"
 
