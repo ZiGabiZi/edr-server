@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 import app.services.event_store as event_store
 import app.services.measurement_run as measurement_run
+import app.services.reputation_build as reputation_build
 import app.services.reputation_store as reputation_store
 from app.main import app
 
@@ -104,7 +105,6 @@ def test_shutdown_leaves_every_event_in_the_main_file(store_on_disk, tmp_path):
         assert wal_path.exists() and wal_path.stat().st_size > 0
 
     assert not wal_path.exists()
-    assert reputation_store._connection is None
 
     backup = tmp_path / "backup.db"
     shutil.copyfile(db_path, backup)
@@ -113,6 +113,29 @@ def test_shutdown_leaves_every_event_in_the_main_file(store_on_disk, tmp_path):
         (count,) = connection.execute("SELECT COUNT(*) FROM events").fetchone()
 
     assert count == 1
+
+
+def test_shutdown_closes_the_reputation_snapshot(store_on_disk, tmp_path, monkeypatch):
+    """
+    Oprirea serverului închide și instantaneul de reputație.
+
+    Instantaneul se construiește aici, fiindcă cel implicit al suitei nu
+    există (conftest.py): fără el, pornirea nu deschide nimic, iar
+    `_connection is None` după oprire ar fi adevărat și fără close().
+    Închiderea nu mută niciun jurnal (baza e deschisă `mode=ro&immutable=1`),
+    deci testul verifică doar că lifespan eliberează conexiunea.
+    """
+    instantaneu = tmp_path / "instantaneu-gol.db"
+    reputation_build.build_empty_snapshot(instantaneu)
+    monkeypatch.setenv(reputation_store.SNAPSHOT_PATH_ENV, str(instantaneu))
+    reputation_store.reset_for_tests()
+
+    with TestClient(app):
+        # Premisa: pornirea a deschis instantaneul. Fără ea, aserțiunea de
+        # după oprire ar trece fără să dovedească nimic.
+        assert reputation_store._connection is not None
+
+    assert reputation_store._connection is None
 
 
 def test_the_stored_event_comes_back_exactly_as_it_went_in(store_on_disk):
