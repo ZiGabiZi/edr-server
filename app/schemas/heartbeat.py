@@ -46,7 +46,8 @@ class HeartbeatRequest(WireModel):
 # Vocabularul închis al câmpului monitoring. Orice valoare în afară de
 # "active" înseamnă că endpoint-ul NU e supravegheat complet. "partial" (v11):
 # pipeline-ul merge, dar unele directoare configurate lipseau la pornire sau
-# s-au pierdut în timpul rulării.
+# s-au pierdut în timpul rulării. Starea nu e definitivă: agentul reprogramează
+# directorul când reapare și revine la "active" în aceeași incarnare.
 MONITORING_ACTIVE = "active"
 MONITORING_STATES = frozenset(
     {

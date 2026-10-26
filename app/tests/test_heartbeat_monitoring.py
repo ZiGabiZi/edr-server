@@ -127,6 +127,28 @@ def test_losing_a_directory_emits_a_transition():
     assert event["run_id"] == measurement_run.current_run_id()
 
 
+def test_a_directory_recovered_without_restart_closes_the_partial_window():
+    """
+    Agentul reprogramează singur directorul care reapare, deci partial -> active
+    vine din ACEEAȘI incarnare. Perechea de evenimente delimitează fereastra
+    neacoperită pe care măsurătoarea o exclude sau o declară (METRICS.md §8).
+    """
+    _register()
+
+    _heartbeat(sequence=1, monitoring="active")
+    _heartbeat(sequence=2, monitoring="partial")
+    _heartbeat(sequence=3, monitoring="partial")
+    _heartbeat(sequence=4, monitoring="active")
+
+    events = _monitoring_events()
+    descriptions = [e["description"] for e in events]
+    assert len(descriptions) == 2
+    assert "active -> partial" in descriptions[0]
+    assert "partial -> active" in descriptions[1]
+    assert {e["agent_instance_id"] for e in events} == {"inst-A"}
+    assert _listed()["monitored"] is True
+
+
 def test_an_unknown_value_is_accepted_but_never_counts_as_active(caplog):
     """
     422 ar opri bucla de heartbeat a agentului până la repornire: un agent mai
