@@ -78,9 +78,17 @@ class TestTheNumeratorBecomesMeasured:
         assert metrics["progressive"]["total_bytes"] > 0
 
     def test_the_ratio_follows_the_published_numerator(self):
-        metrics = compute_disclosure_metrics([_event()], measured_channel_bytes=5_000)
+        # Cu numărătorul măsurat, numitorul ia plicul tot măsurat
+        # (test_measured_envelope.py); fără el, evenimentul ar ieși din numitor
+        # și raportul n-ar avea pe ce să se sprijine.
+        metrics = compute_disclosure_metrics(
+            [_event(event_id=1)],
+            measured_channel_bytes=5_000,
+            measured_envelope_bytes={1: 400},
+        )
 
         denominator = metrics["always_upload"]["bytes"]
+        assert denominator == 4096 + 400
         assert metrics["ratio"]["sent_over_always_upload"] == pytest.approx(
             round(5_000 / denominator, 6), rel=1e-9
         )

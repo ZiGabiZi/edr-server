@@ -225,6 +225,33 @@ _SCHEMA = (
         agents          INTEGER NOT NULL
     )
     """,
+    # Plicul de pe fir al fiecărui eveniment: octeții corpului cererii care l-a
+    # CREAT, consemnați de server la primire (edr-server#14).
+    #
+    # De ce există: numărătorul publicat e măsurat pe fir, iar numitorul
+    # always-upload are nevoie de același plic, măsurat cu aceeași riglă. Fără
+    # tabelul acesta, singurul plic per eveniment era reserializarea celui
+    # STOCAT — mai lungă cu tot ce adaugă serverul — iar numitorul ieșea umflat,
+    # exact în direcția care flatează protocolul.
+    #
+    # De ce un tabel și nu o coloană: același motiv ca la `run_reputation`, nu
+    # există mecanism de migrare, iar `CREATE TABLE IF NOT EXISTS` e aditiv pe o
+    # bază deja scrisă. Evenimentele de dinainte rămân fără rând, iar metrica le
+    # raportează ca gol, nu le inventează un plic.
+    #
+    # De ce nu un câmp în payload: ar intra în reserializare, deci ar umfla
+    # tocmai plicul estimat, și în răspunsul rutei, care e contract.
+    #
+    # Nu e circularitatea de la METRICS.md §7.6: acolo valoarea ar fi trebuit să
+    # călătorească ÎN mesaj; aici serverul o observă din afara lui.
+    """
+    CREATE TABLE IF NOT EXISTS event_wire (
+        event_id   INTEGER NOT NULL PRIMARY KEY,
+        body_bytes INTEGER NOT NULL,
+
+        CHECK (body_bytes > 0)
+    )
+    """,
 )
 
 
@@ -232,6 +259,10 @@ _INSERT_EVENT = """
     INSERT INTO events (run_id, agent_id, client_event_id, received_at, payload)
     VALUES (?, ?, ?, ?, ?)
     ON CONFLICT (client_event_id) DO NOTHING
+"""
+
+_INSERT_EVENT_WIRE = """
+    INSERT INTO event_wire (event_id, body_bytes) VALUES (?, ?)
 """
 
 
@@ -314,9 +345,19 @@ def _row_to_event(event_id: int, payload: str) -> Dict[str, Any]:
     return event
 
 
-def insert_event(event: Dict[str, Any]) -> Dict[str, Any]:
+def insert_event(
+    event: Dict[str, Any], body_bytes: Optional[int] = None
+) -> Dict[str, Any]:
     """
     Persistă un eveniment și îi întoarce forma stocată, cu event_id din bază.
+
+    `body_bytes` e plicul de pe fir: octeții corpului cererii care a adus
+    evenimentul. Se consemnează în `event_wire`, nu în payload, și NUMAI când
+    inserarea chiar a creat rândul. La o retransmisie rămâne valoarea primei
+    sosiri, ca dispoziția și prevalența: retransmisiile se numără doar în
+    numărătorul măsurat, deci asimetria care rămâne poate face protocolul să
+    pară cel mult mai scump, niciodată mai ieftin. `None` sau zero — corp fără
+    dimensiune declarată — nu lasă niciun rând, iar metrica raportează golul.
 
     Dacă `client_event_id` există deja, NU se scrie nimic și se întoarce
     evenimentul care era deja acolo — aceeași semantică de idempotență ca
@@ -345,8 +386,18 @@ def insert_event(event: Dict[str, Any]) -> Dict[str, Any]:
 
         try:
             cursor = connection.execute(_INSERT_EVENT, parameters)
+
+            # În aceeași tranzacție: un eveniment stocat fără plicul lui ar
+            # arăta ca unul de dinainte de event_wire, iar golul raportat ar
+            # descrie o cădere a depozitului ca pe o limită a istoricului.
+            if cursor.rowcount == 1 and body_bytes:
+                connection.execute(
+                    _INSERT_EVENT_WIRE, (cursor.lastrowid, int(body_bytes))
+                )
+
             connection.commit()
         except sqlite3.Error as error:
+            connection.rollback()
             raise EventStoreError(f"Could not store event: {error}") from error
 
         if cursor.rowcount == 1:
@@ -422,6 +473,32 @@ def all_events(run_id: Optional[str] = None) -> List[Dict[str, Any]]:
             raise EventStoreError(f"Could not read events: {error}") from error
 
     return [_row_to_event(event_id, payload) for event_id, payload in rows]
+
+
+def envelope_bytes_by_event(run_id: Optional[str] = None) -> Dict[int, int]:
+    """
+    Plicul de pe fir al evenimentelor care îl au, `event_id → body_bytes`.
+
+    `run_id` restrânge la o singură rulare, ca `all_events`, iar filtrarea se
+    face tot în SQL. Evenimentele fără rând lipsesc din dicționar — nu primesc
+    zero, pentru că zero ar fi un plic, nu absența unuia.
+    """
+    query = "SELECT w.event_id, w.body_bytes FROM event_wire AS w"
+    parameters: tuple = ()
+
+    if run_id is not None:
+        query += " JOIN events AS e ON e.event_id = w.event_id WHERE e.run_id = ?"
+        parameters = (run_id,)
+
+    with _lock:
+        connection = _connection_locked()
+
+        try:
+            rows = connection.execute(query, parameters).fetchall()
+        except sqlite3.Error as error:
+            raise EventStoreError(f"Could not read envelopes: {error}") from error
+
+    return {event_id: body_bytes for event_id, body_bytes in rows}
 
 
 def count_events(run_id: Optional[str] = None) -> int:

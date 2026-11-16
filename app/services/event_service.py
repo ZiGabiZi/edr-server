@@ -56,9 +56,14 @@ def find_event_by_client_id(client_event_id: str) -> Optional[dict]:
     return event_store.event_by_client_id(client_event_id)
 
 
-def create_event(event: EventCreateRequest) -> dict:
+def create_event(event: EventCreateRequest, body_bytes: Optional[int] = None) -> dict:
     """
     Înregistrează un eveniment primit de la un agent.
+
+    `body_bytes` e plicul de pe fir, adică corpul cererii care a adus
+    evenimentul, citit de rută din `Content-Length`. Lipsește pentru
+    evenimentele create de server (`agent_restart`, schimbarea supravegherii):
+    ele n-au traversat rețeaua, deci n-au plic de pe fir.
 
     Eticheta rulării se citește AICI, la ingestie, nu la interogarea metricii.
     Un eveniment aparține experimentului în care a sosit; dacă eticheta s-ar
@@ -112,7 +117,7 @@ def create_event(event: EventCreateRequest) -> dict:
         "status": "received",
     }
 
-    stored = event_store.insert_event(new_event)
+    stored = event_store.insert_event(new_event, body_bytes=body_bytes)
 
     # Rularea evenimentului STOCAT, nu cea curentă: la o retransmisie, cele două
     # diferă, iar cea care contează pentru atribuirea măsurătorii e rularea în

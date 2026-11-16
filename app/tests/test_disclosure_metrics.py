@@ -58,8 +58,10 @@ def test_the_denominator_is_hashed_file_sizes_plus_the_same_envelope():
     fișierul PLUS aceleași metadate de identificare. Numitorul e deci
     `conținut + plic`, cu exact plicul evenimentelor care intră în el.
 
-    Corecția merge aparent în defavoarea protocolului și tocmai de aceea apără
-    afirmația: nimeni nu poate susține că numitorul a fost umflat.
+    Corecția mută raportul în favoarea protocolului, deci plicul din numitor
+    nu are voie să fie mai mare decât cel de la numărător. Aici numărătorul e
+    estimat, deci ambele părți reserializează; cazul măsurat e în
+    test_measured_envelope.py (edr-server#14).
     """
     metrics = compute_disclosure_metrics(
         [_file_event("a.bin", 1000), _file_event("b.bin", 2500)]

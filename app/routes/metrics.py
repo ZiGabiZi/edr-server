@@ -137,11 +137,25 @@ def disclosure_metrics(
     # raportează mai jos ca diagnostic al procesului, fără să intre în cifră.
     applies, verdict = _measurement_verdict(scope)
 
+    # Plicurile de pe fir, per eveniment, pentru numitor (edr-server#14). Citite
+    # pe aceeași rulare ca evenimentele și date funcției doar când numărătorul
+    # e măsurat: rigla numitorului urmează rigla numărătorului. Spre deosebire
+    # de contabilizarea de proces, ele stau în depozit și supraviețuiesc
+    # repornirii, dar fără măsurătoarea care le cere n-au ce căuta în cifră.
+    envelopes = (
+        event_store.envelope_bytes_by_event(
+            None if scope.covers_all_runs else scope.run_id
+        )
+        if applies
+        else None
+    )
+
     metrics = compute_disclosure_metrics(
         events,
         agent_id=agent_id,
         measured_channel_bytes=measured_events["bytes"] if applies else None,
         measured_channel_messages=measured_events["messages"] if applies else None,
+        measured_envelope_bytes=envelopes,
     )
 
     # Canalele întregi, alături de numărător. Podeaua din §1.4 nu se mai

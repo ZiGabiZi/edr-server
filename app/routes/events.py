@@ -1,6 +1,7 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.schemas.event import EventCreateRequest, EventCreateResponse
+from app.wire_middleware import declared_body_bytes
 from app.routes.scope import RunScope, RunScopeDependency
 from app.security import authenticated_agent_id, require_identity_match
 from app.services.event_service import (
@@ -21,6 +22,7 @@ router = APIRouter(
 @router.post("")
 def receive_event(
     event: EventCreateRequest,
+    request: Request,
     caller_agent_id: str = Depends(authenticated_agent_id),
 ) -> EventCreateResponse:
     """
@@ -56,7 +58,11 @@ def receive_event(
             detail=f"Agent '{event.agent_id}' is not registered"
         )
 
-    created_event = create_event(event)
+    # Plicul de pe fir al evenimentului (edr-server#14). Agentul trimite un
+    # eveniment pe cerere, deci corpul cererii E plicul lui — cu aceeași riglă
+    # ca numărătorul măsurat, pe care middleware-ul îl citește din același
+    # antet. Ajunge în depozit, nu în răspuns.
+    created_event = create_event(event, body_bytes=declared_body_bytes(request))
 
     # `next_action` rămâne "none": e o DIRECTIVĂ, iar directivele aparțin benzii
     # de incertitudine și canalului de heartbeat. Dispoziția de treaptă care vine

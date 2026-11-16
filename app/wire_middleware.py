@@ -99,8 +99,15 @@ def channel_for_path(path: str) -> str:
     return wire_accounting.CHANNEL_OTHER
 
 
-def _content_length(request: Request) -> int | None:
-    """Dimensiunea corpului declarată de client, sau None dacă nu o declară."""
+def declared_body_bytes(request: Request) -> int | None:
+    """
+    Dimensiunea corpului declarată de client, sau None dacă nu o declară.
+
+    Publică pentru că o citesc două locuri: middleware-ul, pentru numărătorul
+    măsurat, și ruta de evenimente, pentru plicul per eveniment din numitor
+    (edr-server#14). Aceeași funcție în ambele, ca cele două cifre să nu poată
+    diverge prin felul în care interpretează antetul.
+    """
     raw = request.headers.get("content-length")
 
     if raw is None:
@@ -134,7 +141,7 @@ def account_for_request(request: Request) -> None:
     if request.method not in _METHODS_WITH_BODY:
         return
 
-    byte_count = _content_length(request)
+    byte_count = declared_body_bytes(request)
 
     if byte_count is None:
         wire_accounting.record_unattributable(wire_accounting.UNATTRIBUTABLE_UNSIZED)

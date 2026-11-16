@@ -38,10 +38,16 @@ Cele două costuri, ținute separat deliberat:
 Numitorul include plicul (contracts/METRICS.md §2):
     Un sistem always-upload nu trimite fișiere goale: trimite fișierul PLUS
     aceleași metadate de identificare. Numitorul e deci `conținut + plic`, cu
-    exact plicul evenimentelor care intră în el. Corecția merge aparent în
-    defavoarea protocolului — raportul devine `plic / (plic + conținut)` în loc
-    de `plic / conținut` — și tocmai de aceea apără afirmația: nimeni nu poate
-    susține că numitorul a fost umflat.
+    exact plicul evenimentelor care intră în el. Corecția mută raportul în
+    FAVOAREA protocolului — `plic / (plic + conținut)` e mai mic decât
+    `plic / conținut` — deci plicul din numitor nu are voie să fie nici cu un
+    octet mai mare decât cel de la numărător.
+
+    De aici regula riglei (edr-server#14): numărător măsurat ⟹ plicul din
+    numitor e corpul de pe fir al fiecărui eveniment, consemnat de server la
+    primire; numărător estimat ⟹ reserializarea. Până la #14 numitorul
+    reserializa și sub numărătorul măsurat, iar evenimentul stocat e mai lung
+    decât corpul trimis de agent — numitorul ieșea umflat, mai ales sub 2 KB.
 
 Ce NU poate măsura, și de ce se raportează explicit:
     Un fișier fără hash reușit nu are file_size, deci nu poate intra în
@@ -62,7 +68,7 @@ Ce NU poate măsura, și de ce se raportează explicit:
 """
 
 import json
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 
 # Statusul în care amprenta a reușit, deci fișierul are dimensiune cunoscută.
@@ -91,15 +97,16 @@ def _payload_bytes(event: Dict[str, Any]) -> int:
 
     Aproximare, și se spune: pe fir mai intervin anteturile HTTP și eventuala
     compresie, iar evenimentul stocat poartă câmpuri adăugate de server
-    (event_id, received_at, status) care nu au traversat rețeaua. Ordinul de
-    mărime e însă corect, iar el e tot ce cere comparația cu un numitor de
-    ordinul megaocteților.
+    (event_id, received_at, run_id, status, reputation, prevalence) care nu au
+    traversat rețeaua. Ordinul de mărime e corect, dar asta ajunge doar lângă
+    un numitor de ordinul megaocteților: la fișiere sub 2 KB, câteva sute de
+    octeți de plic în plus mută raportul vizibil.
 
-    Numărătorul MĂSURAT cerut de contracts/METRICS.md §7 — octeți raportați de
-    agent și reconciliați aici, cu discrepanța agent↔server ca metrică proprie
-    — nu există încă. E jumătatea 1.3b, rămasă deschisă după ce 1.3a a adus
-    blocul `disclosure`; până atunci, orice cifră publicată de aici se declară
-    ca estimare, nu ca măsurătoare.
+    E numărătorul doar când măsurătoarea pe fir lipsește (`numerator_source:
+    estimated`), și plicul din numitor doar în același caz: sub numărătorul
+    măsurat, plicul vine din corpul consemnat la primire, nu de aici
+    (edr-server#14). Altfel cele două părți ale raportului ar folosi rigle
+    diferite, iar a numitorului ar fi mai lungă.
     """
     return len(json.dumps(event, ensure_ascii=False, default=str).encode("utf-8"))
 
@@ -109,9 +116,15 @@ def compute_disclosure_metrics(
     agent_id: Optional[str] = None,
     measured_channel_bytes: Optional[int] = None,
     measured_channel_messages: Optional[int] = None,
+    measured_envelope_bytes: Optional[Mapping[int, int]] = None,
 ) -> Dict[str, Any]:
     """
     Calculează metrica peste evenimentele date, opțional pentru un singur agent.
+
+    `measured_envelope_bytes` e plicul de pe fir per eveniment, `event_id →
+    octeți de corp`, consemnat de server la primire. Se folosește NUMAI când
+    numărătorul e măsurat: rigla numitorului urmează numărătorul, nu datele
+    care se întâmplă să fie la îndemână (edr-server#14).
 
     Returnează un dicționar cu următoarele secțiuni:
         scope          — agentul pentru care s-a calculat, sau toți
@@ -179,12 +192,39 @@ def compute_disclosure_metrics(
         bucket["events"] += 1
         bucket["content_bytes"] += _content_bytes(event)
 
+    # Rigla se alege o singură dată, înaintea numitorului, din același test ca
+    # numărătorul de mai jos. Două decizii separate s-ar putea despărți — exact
+    # cum s-au despărțit numărătorul și numitorul între 0465c4b și c3f6c6d.
+    numerator_is_measured = bool(measured_channel_bytes)
+    wire_envelopes = measured_envelope_bytes or {}
+
     hashed: List[Dict[str, Any]] = []
     always_upload_envelope_bytes = 0
     unmeasured: Dict[str, int] = {}
+    envelope_unmeasured = 0
 
     for event, envelope_bytes in zip(file_events, file_event_envelope_bytes):
         if event.get("hash_status") == _HASHED_OK and event.get("file_size") is not None:
+            if numerator_is_measured:
+                # Numărătorul e corpul de pe fir, deci plicul din numitor e tot
+                # corpul de pe fir. Un eveniment care nu-l are iese din numitor
+                # cu totul, conținut și plic: completat cu reserializarea, ar
+                # aduce înapoi exact octeții adăugați de server, iar raportul
+                # ar flata din nou protocolul. Scos, numitorul scade și
+                # raportul crește — subestimare a economiei, declarată.
+                # Fără event_id nu există plic consemnat de căutat: același caz
+                # ca un plic lipsă, nu o excepție.
+                event_id = event.get("event_id")
+                wire_envelope = (
+                    wire_envelopes.get(event_id) if event_id is not None else None
+                )
+
+                if wire_envelope is None:
+                    envelope_unmeasured += 1
+                    continue
+
+                envelope_bytes = wire_envelope
+
             hashed.append(event)
             # Plicul care intră în numitor e exact plicul evenimentului care
             # intră în el: un sistem always-upload ar fi trimis același mesaj de
@@ -228,7 +268,7 @@ def compute_disclosure_metrics(
     #     minciună posibilă despre un sistem de confidențialitate. Zero se
     #     tratează deci ca absență de măsurătoare, iar cifra publicată revine la
     #     estimare, declarată ca atare.
-    if measured_channel_bytes:
+    if numerator_is_measured:
         total_sent = measured_channel_bytes
         numerator_source = "measured"
     else:
@@ -241,12 +281,18 @@ def compute_disclosure_metrics(
             "file_events_with_size": len(hashed),
             "content_bytes": always_upload_content_bytes,
             "envelope_bytes": always_upload_envelope_bytes,
+            # Rigla plicului, declarată lângă el: aceeași cu a numărătorului,
+            # prin construcție. Cine compară două cifre vede dacă au fost
+            # măsurate la fel.
+            "envelope_source": numerator_source,
             "bytes": always_upload_bytes,
             "distinct_hashes": len(distinct_hashes),
             "note": (
                 "Numitorul e continut + plic (METRICS.md §2): un sistem "
                 "always-upload nu trimite fisiere goale, ci fisierul plus "
-                "aceleasi metadate de identificare."
+                "aceleasi metadate de identificare. Plicul e masurat cu rigla "
+                "numaratorului: corpul de pe fir cand numaratorul e masurat, "
+                "reserializarea cand e estimat."
             ),
         },
         "progressive": {
@@ -320,6 +366,7 @@ def compute_disclosure_metrics(
         "unmeasured": {
             "file_events_without_size": sum(unmeasured.values()),
             "by_hash_status": dict(sorted(unmeasured.items())),
+            "envelope_unmeasured": envelope_unmeasured,
             "file_events_without_tier": file_events_without_tier,
             "disclosure_outside_file_events": disclosure_outside_file_events,
             "content_bytes_without_tier": content_bytes_without_tier,
@@ -334,7 +381,11 @@ def compute_disclosure_metrics(
                 "evenimente care nu sunt de fisier, adica incalcari ale "
                 "bicondiționalitatii. content_bytes_without_tier sunt octetii "
                 "de continut din ambele categorii: intra in numarator, dar nu "
-                "in tabelul pe trepte."
+                "in tabelul pe trepte. envelope_unmeasured numara fisierele "
+                "hash-uite scoase din numitorul masurat pentru ca serverul nu "
+                "le-a consemnat plicul de pe fir (evenimente mai vechi decat "
+                "consemnarea, sau cereri fara Content-Length); e zero cand "
+                "numaratorul e estimat."
             ),
         },
     }
