@@ -1,5 +1,4 @@
 import threading
-import pytest
 
 from app.schemas.agent import AgentRegisterRequest
 from app.services import agent_service as svc

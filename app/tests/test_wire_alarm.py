@@ -19,8 +19,6 @@ el, ar suna pentru fiecare instalare — iar o alarmă care sună mereu nu mai e
 alarmă, e o linie de log pe care înveți s-o filtrezi.
 """
 
-import pytest
-
 from app.services import wire_accounting
 from app.services.wire_accounting import IncarnationAccount
 from app.services.wire_alarm import WireDiscrepancyAlarm
@@ -80,6 +78,7 @@ class TestTheThreshold:
 
         breach = wire_accounting.threshold_breach(account)
 
+        assert breach is not None
         assert breach["verdict"] == wire_accounting.VERDICT_BELOW
         assert breach["gap_bytes"] == 1_000
 

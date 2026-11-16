@@ -102,7 +102,7 @@ def test_a_block_without_a_tier_is_rejected():
     partial, sau daca builder-ul a uitat campul.
     """
     with pytest.raises(ValidationError):
-        EventDisclosure(content_bytes=0)
+        EventDisclosure.model_validate({"content_bytes": 0})
 
 
 def _disclosure_notes() -> str:
@@ -159,14 +159,16 @@ def test_the_contract_marks_the_tier_mandatory_inside_the_block():
 
 
 def test_the_block_travels_through_the_full_request_model():
-    event = EventCreateRequest(
-        agent_id="a1",
-        event_type="file_created",
-        file_path="C:\\x.exe",
-        sha256="b" * 64,
-        hash_status="ok",
-        file_size=2048,
-        disclosure={"tier": "T0", "content_bytes": 0},
+    event = EventCreateRequest.model_validate(
+        {
+            "agent_id": "a1",
+            "event_type": "file_created",
+            "file_path": "C:\\x.exe",
+            "sha256": "b" * 64,
+            "hash_status": "ok",
+            "file_size": 2048,
+            "disclosure": {"tier": "T0", "content_bytes": 0},
+        }
     )
 
     assert event.disclosure is not None
@@ -181,10 +183,12 @@ def test_an_event_without_disclosure_is_still_accepted():
     stergere din spool. Un camp lipsa e recuperabil; un eveniment sters, nu.
     Acelasi rationament ca la hash_status intre v3 si v4.
     """
-    event = EventCreateRequest(
-        agent_id="a1",
-        event_type="file_created",
-        file_path="C:\\x.exe",
+    event = EventCreateRequest.model_validate(
+        {
+            "agent_id": "a1",
+            "event_type": "file_created",
+            "file_path": "C:\\x.exe",
+        }
     )
 
     assert event.disclosure is None

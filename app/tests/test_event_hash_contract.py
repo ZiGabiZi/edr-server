@@ -28,42 +28,42 @@ def _base(**overrides):
 
 def test_sha256_without_ok_status_is_rejected():
     with pytest.raises(ValidationError, match="sha256 este prezent"):
-        EventCreateRequest(**_base(sha256="a" * 64, hash_status="unstable"))
+        EventCreateRequest.model_validate(_base(sha256="a" * 64, hash_status="unstable"))
 
 
 def test_ok_status_without_sha256_is_rejected():
     with pytest.raises(ValidationError, match="hash_status este 'ok' dar sha256"):
-        EventCreateRequest(**_base(hash_status="ok"))
+        EventCreateRequest.model_validate(_base(hash_status="ok"))
 
 
 def test_ok_status_without_file_size_is_rejected():
     with pytest.raises(ValidationError, match="file_size lipseste"):
-        EventCreateRequest(**_base(hash_status="ok", sha256="a" * 64))
+        EventCreateRequest.model_validate(_base(hash_status="ok", sha256="a" * 64))
 
 
 def test_ok_status_with_sha256_and_file_size_is_accepted():
-    event = EventCreateRequest(
-        **_base(hash_status="ok", sha256="a" * 64, file_size=1024)
+    event = EventCreateRequest.model_validate(
+        _base(hash_status="ok", sha256="a" * 64, file_size=1024)
     )
     assert event.hash_status == "ok"
 
 
 def test_unknown_hash_status_is_rejected():
     with pytest.raises(ValidationError, match="hash_status invalid"):
-        EventCreateRequest(**_base(hash_status="cine_stie"))
+        EventCreateRequest.model_validate(_base(hash_status="cine_stie"))
 
 
 def test_sha256_that_is_not_hexadecimal_is_rejected():
     """Hex rupt e minciuna de contract, nu incertitudine — aia e hash_status."""
     with pytest.raises(ValidationError, match="nu e hexazecimal"):
-        EventCreateRequest(**_base(hash_status="ok", sha256="z" * 64, file_size=1))
+        EventCreateRequest.model_validate(_base(hash_status="ok", sha256="z" * 64, file_size=1))
 
 
 @pytest.mark.parametrize("lungime", [63, 65])
 def test_sha256_of_the_wrong_length_is_rejected(lungime):
     with pytest.raises(ValidationError, match="nu e hexazecimal"):
-        EventCreateRequest(
-            **_base(hash_status="ok", sha256="a" * lungime, file_size=1)
+        EventCreateRequest.model_validate(
+            _base(hash_status="ok", sha256="a" * lungime, file_size=1)
         )
 
 
@@ -88,7 +88,7 @@ def test_sha256_with_whitespace_is_rejected_although_fromhex_would_accept_it():
     )
 
     with pytest.raises(ValidationError, match="nu e hexazecimal"):
-        EventCreateRequest(**_base(hash_status="ok", sha256=cu_spatiu, file_size=1))
+        EventCreateRequest.model_validate(_base(hash_status="ok", sha256=cu_spatiu, file_size=1))
 
 
 def test_uppercase_sha256_is_canonicalised_instead_of_rejected():
@@ -99,8 +99,8 @@ def test_uppercase_sha256_is_canonicalised_instead_of_rejected():
     hash-uri distincte — doua scrieri ale aceluiasi hash ar fi doua fisiere
     in cifra aia, fara nicio eroare vizibila.
     """
-    event = EventCreateRequest(
-        **_base(hash_status="ok", sha256="A" * 64, file_size=1024)
+    event = EventCreateRequest.model_validate(
+        _base(hash_status="ok", sha256="A" * 64, file_size=1024)
     )
 
     assert event.sha256 == "a" * 64
@@ -148,7 +148,7 @@ def test_the_route_answers_invalid_hex_with_422_and_stores_nothing(
 )
 def test_failure_statuses_are_accepted_without_a_hash(status):
     """Esecul hash-ului e o stare legitima, nu o eroare de validare."""
-    event = EventCreateRequest(**_base(file_path="C:\\x.exe", hash_status=status))
+    event = EventCreateRequest.model_validate(_base(file_path="C:\\x.exe", hash_status=status))
     assert event.sha256 is None
 
 

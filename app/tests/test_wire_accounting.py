@@ -20,9 +20,11 @@ de test, nu de felul în care serializează httpx în versiunea instalată.
 """
 
 import json
+from typing import cast
 
 import pytest
 from starlette.datastructures import Headers
+from starlette.requests import Request
 
 from app.services import auth_service, wire_accounting
 from app.wire_middleware import (
@@ -69,6 +71,15 @@ def _unattributable(reason: str) -> dict:
     return wire_accounting.snapshot()["unattributable"][reason]
 
 
+def _account(
+    agent_id: str, instance_id: str = INSTANCE_ID
+) -> wire_accounting.IncarnationAccount:
+    """Contul unei încarnări care trebuie să existe; lipsa lui pică testul aici."""
+    account = wire_accounting.account_for(agent_id, instance_id)
+    assert account is not None, f"Nicio contabilizare pentru {agent_id}/{instance_id}."
+    return account
+
+
 class TestAttributedTraffic:
     def test_a_post_with_key_and_incarnation_is_attributed(
         self, client, registered_agent_id
@@ -97,7 +108,7 @@ class TestAttributedTraffic:
 
         client.post("/api/events", content=body, headers=headers)
 
-        account = wire_accounting.account_for(registered_agent_id, INSTANCE_ID)
+        account = _account(registered_agent_id)
         assert account.received_bytes == len(body)
 
     def test_two_incarnations_of_the_same_agent_are_counted_apart(
@@ -117,13 +128,11 @@ class TestAttributedTraffic:
         )
 
         assert (
-            wire_accounting.account_for(registered_agent_id, INSTANCE_ID).received_bytes
+            _account(registered_agent_id).received_bytes
             == len(first)
         )
         assert (
-            wire_accounting.account_for(
-                registered_agent_id, "a-doua-incarnare"
-            ).received_bytes
+            _account(registered_agent_id, "a-doua-incarnare").received_bytes
             == len(second)
         )
 
@@ -163,7 +172,7 @@ class TestTrafficThatNeverReachesARoute:
         response = client.post("/api/events", content=body, headers=_headers(key))
 
         assert response.status_code == 422
-        account = wire_accounting.account_for(registered_agent_id, INSTANCE_ID)
+        account = _account(registered_agent_id)
         assert account.received_bytes == len(body)
 
 
@@ -215,7 +224,7 @@ class TestNothingDisappears:
         assert response.status_code == 200, response.text
         assert _unattributable(wire_accounting.UNATTRIBUTABLE_NO_INSTANCE)["messages"] == 0
         assert (
-            wire_accounting.account_for(registered_agent_id, INSTANCE_ID).received_bytes
+            _account(registered_agent_id).received_bytes
             > 0
         )
 
@@ -288,7 +297,7 @@ class TestReportPairing:
             headers=_headers(key, attempted=str(len(first)), delivered=str(len(first))),
         )
 
-        account = wire_accounting.account_for(registered_agent_id, INSTANCE_ID)
+        account = _account(registered_agent_id)
         assert account.received_bytes == len(first) + len(second)
         assert account.received_bytes_at_last_report == len(first)
         assert account.reported_attempted_bytes == len(first)
@@ -312,12 +321,13 @@ class TestReportPairing:
             headers=_headers(key, attempted=str(len(first)), delivered=str(len(first))),
         )
 
-        account = wire_accounting.account_for(registered_agent_id, INSTANCE_ID)
-        assert (
-            account.reported_delivered_bytes
-            <= account.received_bytes_at_last_report
-            <= account.reported_attempted_bytes
-        )
+        account = _account(registered_agent_id)
+        delivered = account.reported_delivered_bytes
+        received = account.received_bytes_at_last_report
+        attempted = account.reported_attempted_bytes
+        # Un None aici ar face comparația să arunce TypeError în loc să explice.
+        assert delivered is not None and received is not None and attempted is not None
+        assert delivered <= received <= attempted
 
     def test_a_malformed_report_loses_the_report_not_the_bytes(
         self, client, registered_agent_id
@@ -331,7 +341,7 @@ class TestReportPairing:
             headers=_headers(key, attempted="nu-e-numar", delivered="-5"),
         )
 
-        account = wire_accounting.account_for(registered_agent_id, INSTANCE_ID)
+        account = _account(registered_agent_id)
         assert account.received_bytes == len(body)
         assert account.reported_attempted_bytes is None
         assert account.malformed_reports == 1
@@ -346,7 +356,7 @@ class TestReportPairing:
 
         client.post("/api/events", content=body, headers=_headers(key))
 
-        account = wire_accounting.account_for(registered_agent_id, INSTANCE_ID)
+        account = _account(registered_agent_id)
         assert account.malformed_reports == 0
         assert account.reported_attempted_bytes is None
 
@@ -365,6 +375,12 @@ class _FakeRequest:
         self.headers = Headers(headers or {})
 
 
+def _fake_request(method: str = "POST", headers: dict | None = None) -> Request:
+    # Middleware-ul citește doar `method` și `headers`; restul lui Request nu
+    # contează aici, iar cast-ul o spune explicit în loc s-o ascundă.
+    return cast(Request, _FakeRequest(method=method, headers=headers))
+
+
 class TestSizeless:
     """
     Corpuri fără `Content-Length` — cazul pe care nu-l poate produce TestClient.
@@ -376,7 +392,7 @@ class TestSizeless:
     """
 
     def test_a_body_without_content_length_is_counted_as_unsized(self, client):
-        account_for_request(_FakeRequest(headers={"X-Agent-Key": "orice"}))
+        account_for_request(_fake_request(headers={"X-Agent-Key": "orice"}))
 
         counters = _unattributable(wire_accounting.UNATTRIBUTABLE_UNSIZED)
         assert counters["messages"] == 1
@@ -386,12 +402,12 @@ class TestSizeless:
         assert counters["bytes"] == 0
 
     def test_a_malformed_content_length_is_treated_as_missing(self, client):
-        account_for_request(_FakeRequest(headers={"Content-Length": "nu-e-numar"}))
+        account_for_request(_fake_request(headers={"Content-Length": "nu-e-numar"}))
 
         assert _unattributable(wire_accounting.UNATTRIBUTABLE_UNSIZED)["messages"] == 1
 
     def test_an_empty_body_is_not_counted_at_all(self, client):
-        account_for_request(_FakeRequest(headers={"Content-Length": "0"}))
+        account_for_request(_fake_request(headers={"Content-Length": "0"}))
 
         snapshot = wire_accounting.snapshot()
         assert all(
@@ -399,7 +415,7 @@ class TestSizeless:
         )
 
     def test_a_method_without_a_body_is_skipped_before_anything_else(self, client):
-        account_for_request(_FakeRequest(method="GET", headers={"Content-Length": "10"}))
+        account_for_request(_fake_request(method="GET", headers={"Content-Length": "10"}))
 
         snapshot = wire_accounting.snapshot()
         assert all(

@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from types import EllipsisType
 
 import app.services.agent_service as svc
 import app.services.auth_service as auth_service
@@ -16,7 +17,7 @@ def setup_function():
 def _register(
     agent_id: str = "agent-1",
     machine_id_type: str = "hash",
-    machine_id_hash=...,
+    machine_id_hash: str | None | EllipsisType = ...,
 ):
     if machine_id_hash is ...:
         machine_id_hash = f"hash-{agent_id}"

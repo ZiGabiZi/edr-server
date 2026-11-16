@@ -107,7 +107,8 @@ def test_a_truncated_hash_is_refused_by_the_schema(working):
 def test_a_lookup_refuses_a_hex_string(snapshot):
     """Granița se apără și în Python, nu doar în SQL."""
     with pytest.raises(reputation_store.ReputationStoreError):
-        reputation_store.lookup(TEST_HASH.hex())
+        # Tipul greșit e chiar ce se testează: garda de la rulare, nu cea statică.
+        reputation_store.lookup(TEST_HASH.hex())  # pyright: ignore[reportArgumentType]
 
 
 # ── 2. Două axe, fiecare cu proveniența ei ──────────────────────────────────

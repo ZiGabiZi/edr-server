@@ -22,8 +22,6 @@ că aritmetica se adună.
 
 import json
 
-import pytest
-
 from app.services import auth_service, wire_accounting
 from app.wire_middleware import (
     WIRE_ATTEMPTED_HEADER,
@@ -95,9 +93,9 @@ class TestTheThreeStates:
         _send_two(client, registered_agent_id, attempted=None, delivered=None)
 
         key = client.issued_keys[registered_agent_id]
-        total_before = wire_accounting.account_for(
-            registered_agent_id, INSTANCE_ID
-        ).received_bytes
+        account = wire_accounting.account_for(registered_agent_id, INSTANCE_ID)
+        assert account is not None
+        total_before = account.received_bytes
 
         client.post(
             "/api/events",

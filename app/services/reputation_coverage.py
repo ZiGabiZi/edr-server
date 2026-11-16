@@ -89,6 +89,7 @@ def measure(fisiere: Sequence[dict], connection) -> Dict[str, Any]:
     tabel temporar ar cere scriere intr-un instantaneu deschis read-only.
     """
     per_origine: Dict[str, Counter] = {}
+    descriere_origine: Dict[str, Dict[str, str]] = {}
     total = Counter()
     hash_uri_rele = 0
 
@@ -133,12 +134,18 @@ def measure(fisiere: Sequence[dict], connection) -> Dict[str, Any]:
             tinta["ambele"] += software and amenintare
             tinta["necunoscut"] += not (software or amenintare)
 
-        contor["strat"] = fisier.get("stratum") or "?"
-        contor["eticheta"] = fisier.get("label") or "?"
+        # Separat de contor: Counter e pentru numaratori, iar stratul si
+        # eticheta sunt text. Se lipesc la loc doar in rezultat.
+        descriere_origine[origine] = {
+            "strat": fisier.get("stratum") or "?",
+            "eticheta": fisier.get("label") or "?",
+        }
 
     return {
         "total": dict(total),
-        "per_origine": {k: dict(v) for k, v in sorted(per_origine.items())},
+        "per_origine": {
+            k: {**v, **descriere_origine[k]} for k, v in sorted(per_origine.items())
+        },
         "hash_uri_necitibile": hash_uri_rele,
     }
 

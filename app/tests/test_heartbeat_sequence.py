@@ -36,8 +36,12 @@ def _register(agent_id: str = "agent-1"):
     )
 
 
-def _heartbeat(agent_id: str, sequence=None, instance_id="inst-A"):
-    payload = {"agent_id": agent_id}
+def _heartbeat(
+    agent_id: str,
+    sequence: int | None = None,
+    instance_id: str | None = "inst-A",
+):
+    payload: dict[str, object] = {"agent_id": agent_id}
     if sequence is not None:
         payload["sequence"] = sequence
     if instance_id is not None:

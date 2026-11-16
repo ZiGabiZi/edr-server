@@ -153,24 +153,23 @@ class EventCreateRequest(WireModel):
         Impune DOAR invariantele care nu pot fi incalcate de traficul de azi.
 
         hash_status obligatoriu-cand-file_path-e-prezent NU e verificat aici,
-        deliberat: agentul curent trimite file_path fara hash_status,
-        iar o exceptie ridicata aici ar deveni 422 ->
-        FatalTransportError -> EventDispatcher trateaza evenimentul ca poison
-        message si il sterge din spool. Un camp lipsa e recuperabil; un
-        eveniment sters, nu. Vezi app/schemas/wire.py pentru acelasi
-        rationament aplicat cheilor nedeclarate. Invarianta e verificata in
-        schimb la nivel de test, impotriva builder-ului agentului
-        (test_event_contract.py::
-        test_agent_builder_always_declares_hash_status_when_file_path_is_present),
-        si va deveni validator aici cand agentul chiar calculeaza hash-uri.
+        deliberat. La v3 agentul trimitea file_path fara hash_status, iar o
+        exceptie ridicata aici ar fi devenit 422 -> FatalTransportError ->
+        EventDispatcher trateaza evenimentul ca poison message si il sterge
+        din spool. Un camp lipsa e recuperabil; un eveniment sters, nu. Vezi
+        app/schemas/wire.py pentru acelasi rationament aplicat cheilor
+        nedeclarate. De la v4 agentul trimite hash_status, iar invarianta e
+        verificata la nivel de test, pe hasher-ul real al agentului
+        (test_event_hash_contract.py::
+        test_agent_builder_always_declares_hash_status_when_file_path_is_present).
+        Trecerea la validator n-a fost facuta: ar respinge evenimentele ramase
+        in spool-ul unui agent de dinainte de v4.
 
         Aceeasi rezerva se aplica bicondiționalitatii introduse la v5:
-        'disclosure prezent <=> file_path prezent'. Agentul curent inca nu
-        emite blocul, deci un validator aici ar sterge din spool exact
-        evenimentele pe care metrica de trepte exista sa le numere. Se
-        verifica prin test impotriva builder-ului agentului, si devine
-        validator cand agentul il emite — la fel cum s-a intamplat cu
-        hash_status intre v3 si v4.
+        'disclosure prezent <=> file_path prezent'. Agentul emite blocul de la
+        v5, verificat in edr-agent de tests/test_disclosure_tier.py; un
+        validator aici ar sterge din spool-ul unui agent mai vechi exact
+        evenimentele pe care metrica de trepte exista sa le numere.
         """
         if self.hash_status is not None and self.hash_status not in VALID_HASH_STATUSES:
             raise ValueError(
@@ -208,13 +207,17 @@ class EventCreateRequest(WireModel):
         #
         # 422 e raspunsul corect, si nu deschide o clasa noua de esec: campul
         # producea deja 422 prin bicondiționalitatea de mai sus. Rezerva
-        # poison-message din docstring nu se aplica — acolo agentul curent omitea
+        # poison-message din docstring nu se aplica — acolo un agent corect omitea
         # legitim un camp, aici niciun agent corect nu poate emite hex invalid.
         # Un hex rupt e o minciuna de contract, nu incertitudine; incertitudinea
         # are deja vocabular propriu, in hash_status.
-        if has_hash:
-            hexa = self.sha256
+        #
+        # Testul e pe `hexa`, nu pe `has_hash`: verificatorul de tipuri nu
+        # restrange `self.sha256` printr-o variabila intermediara, deci aici ar
+        # ramane `str | None` si fiecare len()/lower() ar fi semnalat.
+        hexa = self.sha256
 
+        if hexa is not None:
             if len(hexa) != SHA256_HEX_LENGTH or not set(hexa) <= _HEX_DIGITS:
                 raise ValueError(
                     f"sha256 nu e hexazecimal de {SHA256_HEX_LENGTH} de "
