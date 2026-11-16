@@ -91,6 +91,19 @@ def _content_bytes(event: Dict[str, Any]) -> int:
     return int(disclosure.get("content_bytes") or 0)
 
 
+def _is_valid_size(value: Any) -> bool:
+    """
+    Dacă o dimensiune STOCATĂ poate intra în numitor: întreg nenegativ.
+
+    Schema respinge de la v12 orice altceva (app/schemas/event.py), dar
+    depozitul păstrează evenimente primite înainte de v12, când `-5000000`,
+    `true` și `4096.0` primeau 200. `bool` se exclude explicit pentru că în
+    Python e subclasă de `int`: `True` ar trece testul de tip și ar intra în
+    numitor ca un octet.
+    """
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
 def _payload_bytes(event: Dict[str, Any]) -> int:
     """
     Costul de metadate al unui eveniment, aproximat prin serializarea lui JSON.
@@ -199,12 +212,26 @@ def compute_disclosure_metrics(
     wire_envelopes = measured_envelope_bytes or {}
 
     hashed: List[Dict[str, Any]] = []
+    # Contribuția fiecărui eveniment la numitor, conținut plus plic, cu rigla
+    # aleasă mai sus. Paralelă cu `hashed`, ca să se poată spune la final cât
+    # din numitor vine de la un singur eveniment și de la fiecare agent.
+    contributions: List[int] = []
     always_upload_envelope_bytes = 0
     unmeasured: Dict[str, int] = {}
     envelope_unmeasured = 0
+    file_size_invalid = 0
 
     for event, envelope_bytes in zip(file_events, file_event_envelope_bytes):
         if event.get("hash_status") == _HASHED_OK and event.get("file_size") is not None:
+            if not _is_valid_size(event["file_size"]):
+                # Un eveniment stocat înainte de v12 cu o dimensiune pe care
+                # schema de azi o respinge. Iese din numitor cu totul, ca un
+                # plic nemăsurat, și se numără: lăsat înăuntru, un negativ
+                # micșorează numitorul, iar un `true` îl crește cu un octet
+                # inventat.
+                file_size_invalid += 1
+                continue
+
             if numerator_is_measured:
                 # Numărătorul e corpul de pe fir, deci plicul din numitor e tot
                 # corpul de pe fir. Un eveniment care nu-l are iese din numitor
@@ -226,6 +253,7 @@ def compute_disclosure_metrics(
                 envelope_bytes = wire_envelope
 
             hashed.append(event)
+            contributions.append(event["file_size"] + envelope_bytes)
             # Plicul care intră în numitor e exact plicul evenimentului care
             # intră în el: un sistem always-upload ar fi trimis același mesaj de
             # identificare, plus fișierul.
@@ -237,6 +265,7 @@ def compute_disclosure_metrics(
     always_upload_content_bytes = sum(int(event["file_size"]) for event in hashed)
     always_upload_bytes = always_upload_content_bytes + always_upload_envelope_bytes
     distinct_hashes = {event.get("sha256") for event in hashed if event.get("sha256")}
+    concentration = _denominator_concentration(hashed, contributions, always_upload_bytes)
 
     # Diferența dintre conținutul divulgat și cel atribuit unei trepte. Derivată,
     # nu numărată separat: două acumulatoare pentru aceeași mărime se pot
@@ -287,6 +316,7 @@ def compute_disclosure_metrics(
             "envelope_source": numerator_source,
             "bytes": always_upload_bytes,
             "distinct_hashes": len(distinct_hashes),
+            "concentration": concentration,
             "note": (
                 "Numitorul e continut + plic (METRICS.md §2): un sistem "
                 "always-upload nu trimite fisiere goale, ci fisierul plus "
@@ -367,6 +397,7 @@ def compute_disclosure_metrics(
             "file_events_without_size": sum(unmeasured.values()),
             "by_hash_status": dict(sorted(unmeasured.items())),
             "envelope_unmeasured": envelope_unmeasured,
+            "file_size_invalid": file_size_invalid,
             "file_events_without_tier": file_events_without_tier,
             "disclosure_outside_file_events": disclosure_outside_file_events,
             "content_bytes_without_tier": content_bytes_without_tier,
@@ -385,7 +416,85 @@ def compute_disclosure_metrics(
                 "hash-uite scoase din numitorul masurat pentru ca serverul nu "
                 "le-a consemnat plicul de pe fir (evenimente mai vechi decat "
                 "consemnarea, sau cereri fara Content-Length); e zero cand "
-                "numaratorul e estimat."
+                "numaratorul e estimat. file_size_invalid numara fisierele "
+                "hash-uite scoase din numitor pentru ca dimensiunea stocata nu e "
+                "un intreg nenegativ (evenimente primite inainte de contract v12)."
             ),
         },
+    }
+
+
+def _denominator_concentration(
+    hashed: List[Dict[str, Any]],
+    contributions: List[int],
+    always_upload_bytes: int,
+) -> Dict[str, Any]:
+    """
+    Cât din numitor vine de la un singur eveniment și de la fiecare agent.
+
+    De ce există:
+        Numitorul nu e măsurat, e DECLARAT de mașina observată: `file_size`
+        vine din stat()-ul agentului. Schema respinge de la v12 dimensiunile
+        negative, dar nu are cum să știe una prea mare: plafonul real e
+        `hash_max_file_size_bytes` din configul agentului, pe care serverul nu-l
+        vede. Un singur eveniment cu `file_size = 10**15` lângă zece fișiere de
+        1 MB a dus raportul de la 0,000336 la 0,0 — iar cifra n-a lăsat nicio
+        urmă că un eveniment din unsprezece o produsese.
+
+        Răspunsul nu e un prag, ci o declarație lângă cifră, ca restul
+        golurilor: un raport dominat de un eveniment sau de un agent se vede ca
+        atare. Același lucru prinde și un agent care minte în limite
+        plauzibile, de exemplu 200 MiB la fiecare fișier, pe care niciun prag
+        nu l-ar fi prins.
+
+    Ce NU face:
+        Nu recalculează raportul fără evenimentul cel mai mare. Scos din
+        numitor, evenimentul ar trebui scos și din numărător, iar sub
+        numărătorul măsurat serverul nu are octeți per eveniment (§3.2), doar
+        totalul de pe fir: cele două părți ar ajunge pe rigle diferite, exact
+        greșeala închisă la edr-server#14.
+
+    Contribuția e `file_size + plic`, cu plicul măsurat cu aceeași riglă ca
+    restul numitorului, deci cotele se adună la 1 peste agenți.
+    """
+    note = (
+        "Cat din numitor vine de la evenimentul cel mai mare si de la fiecare "
+        "agent, continut plus plic, cu rigla numitorului. file_size e "
+        "declarat de agent, nu masurat, iar serverul nu-i cunoaste plafonul: "
+        "un share apropiat de 1 la largest_event inseamna ca raportul "
+        "descrie un singur fisier, nu rularea."
+    )
+
+    # Forma rămâne aceeași și fără numitor: un cititor care caută cheia o
+    # găsește, cu None în loc de un eveniment inventat.
+    if not hashed or not always_upload_bytes:
+        return {"largest_event": None, "by_agent": {}, "note": note}
+
+    def share(part: int) -> float:
+        return round(part / always_upload_bytes, 6)
+
+    # max() întoarce primul maxim, deci la egalitate câștigă primul eveniment
+    # în ordinea depozitului: cifra rămâne aceeași la fiecare apel.
+    top = max(range(len(hashed)), key=lambda i: contributions[i])
+    by_agent: Dict[str, Dict[str, int]] = {}
+
+    for event, contribution in zip(hashed, contributions):
+        bucket = by_agent.setdefault(
+            str(event.get("agent_id")), {"events": 0, "bytes": 0}
+        )
+        bucket["events"] += 1
+        bucket["bytes"] += contribution
+
+    return {
+        "largest_event": {
+            "event_id": hashed[top].get("event_id"),
+            "agent_id": hashed[top].get("agent_id"),
+            "bytes": contributions[top],
+            "share": share(contributions[top]),
+        },
+        "by_agent": {
+            agent: {**by_agent[agent], "share": share(by_agent[agent]["bytes"])}
+            for agent in sorted(by_agent)
+        },
+        "note": note,
     }

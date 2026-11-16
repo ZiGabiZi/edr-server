@@ -170,6 +170,47 @@ a părăsit endpoint-ul a plecat indiferent dacă știm cărei trepte să-l atri
 scos din numărător pentru că atribuirea lipsește, ar deplasa cifra exact în
 direcția care flatează afirmația.
 
+### 2.2 Concentrarea numitorului
+
+Numitorul nu e măsurat, e **declarat**: `file_size` vine din `stat()`-ul
+agentului. Numărătorul se poate măsura pe fir (§7), numitorul nu. Până la
+contract v12 câmpul n-avea nicio limită, iar un singur eveniment cu
+`file_size = 10^15` lângă zece fișiere de 1 MB a dus raportul de la 0,000336 la
+0,0, fără nicio urmă că un eveniment din unsprezece îl produsese.
+
+De la v12 schema respinge cu 422 orice `file_size` negativ sau ne-întreg. Limita
+de sus nu se impune: plafonul real e `hash_max_file_size_bytes` din configul
+agentului, pe care serverul nu-l cunoaște. Un prag ales pe server ar fi ori prea
+larg ca să prindă ceva, ori ar respinge un fișier real. Mai mult, niciun prag
+n-ar prinde un agent care minte în limite plauzibile, de exemplu 200 MiB la
+fiecare fișier.
+
+Apărarea e deci o declarație lângă cifră, nu un prag. `always_upload.concentration`
+raportează:
+
+- `largest_event` — evenimentul cu cea mai mare contribuție la numitor
+  (`event_id`, `agent_id`, `bytes`, `share`);
+- `by_agent` — pentru fiecare agent, câte evenimente, câți octeți și ce cotă din
+  numitor.
+
+Contribuția e `file_size + plic`, cu plicul măsurat cu rigla numitorului (§2),
+deci cotele din `by_agent` se adună la 1. Un `share` apropiat de 1 la
+`largest_event` înseamnă că raportul descrie un singur fișier, nu rularea; unul
+apropiat de 1 la un agent, într-un parc, înseamnă că raportul descrie acel
+endpoint.
+
+**Ce nu se calculează: raportul fără evenimentul cel mai mare.** Scos din
+numitor, evenimentul ar trebui scos și din numărător, iar sub numărătorul
+măsurat serverul are doar totalul de pe fir, nu octeți per eveniment (§3.2).
+Cele două părți ar ajunge pe rigle diferite, exact greșeala închisă la
+edr-server#14.
+
+**Evenimentele de dinainte de v12.** Depozitul păstrează evenimente primite când
+`-5000000`, `true` și `4096.0` treceau. Un fișier hash-uit a cărui dimensiune
+stocată nu e un întreg nenegativ iese din numitor cu totul și se numără ca
+`unmeasured.file_size_invalid`. Lăsat înăuntru, un negativ ar micșora
+numitorul, iar un `true` l-ar crește cu un octet inventat.
+
 ---
 
 ## 3. Eficiența
@@ -873,6 +914,8 @@ greșit, iar responsabilitatea e a celui care a publicat-o.
 - corpusul: câte fișiere, ce distribuție de dimensiuni, ce fracțiune malițioasă
 - suprapunerea între endpoint-uri, când cifra e per parc
 - golul din §2.1, pe statusuri
+- concentrarea numitorului din §2.2: cota evenimentului celui mai mare și a
+  fiecărui agent
 - dacă numărătorul e măsurat sau estimat, și — când e estimat lângă o
   contabilizare nenulă — motivul (§7.5)
 - politica activă și calibrarea parametrului de cost

@@ -1,5 +1,5 @@
 from typing import Optional
-from pydantic import model_validator, BaseModel
+from pydantic import model_validator, BaseModel, StrictInt
 
 from app.schemas.wire import WireModel
 
@@ -140,7 +140,11 @@ class EventCreateRequest(WireModel):
     file_path: Optional[str] = None
     sha256: Optional[str] = None
     hash_status: Optional[str] = None
-    file_size: Optional[int] = None
+    # StrictInt, nu int (v12). In modul implicit Pydantic converteste tacut:
+    # `true` devenea 1, iar `4096.0` devenea 4096, ambele cu 200. Agentul ia
+    # valoarea din stat().st_size, care e intotdeauna un intreg, deci orice alt
+    # tip pe fir e un emitent stricat, nu o dimensiune de fisier.
+    file_size: Optional[StrictInt] = None
     measurements: Optional[EventMeasurements] = None
     disclosure: Optional[EventDisclosure] = None
     description: Optional[str] = None
@@ -199,6 +203,29 @@ class EventCreateRequest(WireModel):
                 "trebuie sa insoteasca intotdeauna un hash reusit — e "
                 "numaratorul metricii de octeti divulgati vs. always-upload, "
                 "si nu se poate reconstrui retroactiv daca fisierul se schimba."
+            )
+
+        # Dimensiunea nu poate fi negativa (v12), la orice hash_status: si
+        # 'too_large' poarta file_size, tot din stat(). Pana la v12 un -5000000
+        # primea 200 si intra in NUMITORUL metricii de divulgare, unde il
+        # micsora; un negativ destul de mare il ducea la zero sau sub, deci la
+        # un raport absent sau negativ.
+        #
+        # 422 e sigur din acelasi motiv ca la forma lui sha256 de mai jos:
+        # rezerva poison-message protejeaza un camp pe care un agent corect il
+        # omite legitim, iar aici niciun agent corect nu poate emite un negativ.
+        #
+        # Limita de SUS nu se verifica, deliberat. Plafonul real e
+        # hash_max_file_size_bytes din configul agentului, pe care serverul nu-l
+        # cunoaste; un prag ales aici ar fi ori prea larg ca sa prinda ceva,
+        # ori ar respinge un fisier real. Apararea impotriva unei dimensiuni
+        # absurde e in metrica: disclosure_metrics raporteaza cat din numitor
+        # vine de la un singur eveniment si de la fiecare agent.
+        if self.file_size is not None and self.file_size < 0:
+            raise ValueError(
+                f"file_size nu poate fi negativ: {self.file_size}. Agentul il ia "
+                f"din stat().st_size; un negativ inseamna un emitent stricat, iar "
+                f"acceptat ar micsora numitorul metricii de divulgare."
             )
 
         # Forma hash-ului (v7). Se verifica AICI, nu in ruta si nu in serviciul
