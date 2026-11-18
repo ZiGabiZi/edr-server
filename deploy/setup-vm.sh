@@ -83,6 +83,8 @@ systemctl enable edr-server
 systemctl restart edr-server
 
 # Pornirea amprentează reputation.db: ~10 s cu fișierul în cache, ~30 s la rece.
+# Imediat după bootul VM-ului durează mai mult (129 s măsurat), dar scriptul
+# pornește serviciul pe un VM deja pornit, deci 90 s ajung.
 echo "Aștept /health (până la 90 s)..."
 healthy=0
 for _ in $(seq 1 90); do

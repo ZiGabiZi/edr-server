@@ -134,8 +134,10 @@ def account_for_request(request: Request) -> None:
         3. prezintă o cheie? dacă nu, `no_key`;
         4. e cheia cunoscută? dacă nu, `unknown_key` — traficul care nu ajunge
            niciodată la o rută;
-        5. își declară încarnarea? dacă nu, `no_instance` — azi, tipic, cererea
-           de înregistrare (edr-agent#19);
+        5. își declară încarnarea? dacă nu, `no_instance` — un client cu cheie
+           validă care nu trimite antetul de încarnare. Până la edr-agent#19
+           era cererea de înregistrare; de atunci agentul pune antetul și
+           acolo, deci azi rămân doar agenții de dinainte de reparație;
         6. altfel, atribuit.
     """
     if request.method not in _METHODS_WITH_BODY:

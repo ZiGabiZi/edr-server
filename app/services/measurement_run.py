@@ -31,7 +31,8 @@ Cele două surse ale etichetei, și de ce amândouă:
       repornire = un experiment nou — se păstrează fără nicio muncă în plus.
 
     - DATĂ DE OPERATOR, prin `POST /api/runs/{label}`. E instrumentul. Eticheta
-      poate fi chiar numele intrării de tip `masuratoare` din edr-journal, iar
+      poate fi chiar numele fișei de măsurătoare din jurnalul proiectului
+      (METRICS.md §9.2 spune ce înseamnă „jurnal" după 13 noiembrie 2026), iar
       atunci legătura dintre ce am promis că măsor și ce date am obținut devine
       VERIFICABILĂ, nu declarată: oricine ia numele din jurnal, îl dă serverului
       și primește exact cifrele acelui experiment. Fără ea, legătura e pe
@@ -46,8 +47,9 @@ De ce o etichetă folosită o dată nu se mai poate refolosi:
     E singurul mod în care mecanismul poate să mintă. Cine reia o etichetă deja
     publicată amestecă date noi în cifre pe care le-a citat deja cineva, iar
     amestecul e invizibil în răspuns: eticheta e aceeași, numerele nu. E exact
-    problema pentru care jurnalul are regula că un commit de montaj nu se
-    modifică prin amend sau push --force. Aici echivalentul e un refuz, cu 409.
+    problema pentru care fișa de măsurătoare nu se rescrie după rulare, iar un
+    commit de montaj publicat nu se modifică prin amend sau push --force. Aici
+    echivalentul e un refuz, cu 409.
 
     Registrul etichetelor folosite trăiește în ACEEAȘI bază cu evenimentele
     (app/services/event_store.py), nu în memorie. În memorie s-ar fi golit exact

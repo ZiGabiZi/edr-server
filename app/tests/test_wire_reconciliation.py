@@ -14,10 +14,14 @@ a primit mai mult decât a trimis agentul, adică ori cineva trimite în numele
 lui, ori există un canal necontabilizat.
 
 Testul care contează cel mai mult e
-`test_the_enrollment_hole_shows_up_as_a_broken_lower_bound`. El reproduce
-edr-agent#19 — o violare reală, permanentă, de mărime și cauză cunoscute. Dacă
-metrica n-o vede, metrica e greșită, iar restul testelor de aici verifică doar
-că aritmetica se adună.
+`test_unattributed_enrollment_bytes_become_a_declared_baseline`. Prima înrolare
+a unei mașini rămâne neatribuibilă (nu există încă o cheie). Până la
+edr-agent#19 golul se repeta la fiecare încarnare, fiindcă înregistrarea pleca
+fără antet de încarnare; până la edr-server#11 ieșea ca margine de jos ruptă.
+Testul fixează forma de azi: octeții de înrolare devin linie de bază declarată
+(`adoption`), nu discrepanță. Dacă metrica i-ar pierde sau i-ar acuza, cifra
+ar fi greșită, iar restul testelor de aici verifică doar că aritmetica se
+adună.
 """
 
 import json

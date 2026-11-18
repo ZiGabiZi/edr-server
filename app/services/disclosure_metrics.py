@@ -15,9 +15,10 @@ Ce măsoară:
 
 De ce trăiește aici și nu se calculează retroactiv:
     contracts/wire-contract.json impune file_size obligatoriu când
-    hash_status == 'ok', tocmai pentru că e numărătorul acestei metrici și „nu
-    se poate reconstrui retroactiv dacă fișierul s-a schimbat". Invarianta a
-    fost impusă din v3; funcția asta e primul loc care o și folosește.
+    hash_status == 'ok', tocmai pentru că e numitorul acestei metrici — ce ar
+    fi urcat always-upload — și „nu se poate reconstrui retroactiv dacă fișierul
+    s-a schimbat". Invarianta a fost impusă din v3; funcția asta e primul loc
+    care o și folosește.
 
 Cele două costuri, ținute separat deliberat:
     - CONȚINUT divulgat: octeți de fișier care au părăsit endpoint-ul, însumați

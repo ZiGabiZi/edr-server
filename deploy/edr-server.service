@@ -32,7 +32,9 @@ RestartSec=3
 # e mare. La pornire nu există un echivalent: cu Type=simple, systemd
 # consideră serviciul pornit imediat ce lansează procesul, deci nu știe când
 # serverul răspunde efectiv (~10 s cald, ~30 s la rece, cât durează amprenta
-# pe reputation.db). Asta o verifică deploy/setup-vm.sh, prin /health.
+# pe reputation.db; imediat după bootul VM-ului, cu discul încărcat de alte
+# servicii, s-au măsurat 129 s). Asta o verifică deploy/setup-vm.sh, prin
+# /health.
 TimeoutStopSec=30
 
 # Restricții care nu cer nimic de la aplicație: nu-și poate ridica

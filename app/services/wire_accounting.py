@@ -30,9 +30,10 @@ De ce nimic nu se pierde:
 
     Motivul contează cel puțin cât cifra. `unknown_key` e traficul unui agent cu
     cheie greșită sau revocată — cel mai interesant din tot ce trece pe aici, și
-    singurul care nu ajunge niciodată la o rută. Contopit cu `no_instance`, care
-    e o consecință structurală cunoscută a payload-ului de înregistrare
-    (edr-agent#19), n-ar mai spune nimic despre niciunul.
+    singurul care nu ajunge niciodată la o rută. Contopit cu `no_instance` —
+    un agent cunoscut care nu-și declară încarnarea, adică azi doar un agent
+    de dinainte de edr-agent#19, când înregistrarea pleca fără antet —, n-ar
+    mai spune nimic despre niciunul.
 """
 
 from dataclasses import dataclass, field, replace

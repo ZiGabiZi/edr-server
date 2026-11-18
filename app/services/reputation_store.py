@@ -77,7 +77,7 @@ De ce fișierul se deschide `mode=ro&immutable=1`:
     nevoie să creeze `-wal` și `-shm`. De aceea fișierul livrat se produce cu
     `VACUUM INTO`, care scrie o copie compactă în modul jurnal implicit. Fără
     pasul acela, „imutabil" ar fi o intenție pe care prima deschidere o
-    contrazice. Testul `test_sealed_snapshot_is_not_in_wal_mode` fixează asta.
+    contrazice. Testul `test_the_sealed_snapshot_is_not_in_wal_mode` fixează asta.
 
 De ce amprenta se recalculează și nu se stochează înăuntru:
     O amprentă scrisă în fișier ar face parte din ce se amprentează — un ou

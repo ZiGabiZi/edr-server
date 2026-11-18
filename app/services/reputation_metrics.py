@@ -19,9 +19,11 @@ De ce e o cifră SEPARATĂ de metrica de divulgare, și nu încă o secțiune î
 
 De ce NU se publică aici un procent de „închis la T0":
     Ar cere o mapare dispoziție → închis/escaladat, iar maparea aia e chiar
-    decizia benzii de incertitudine (§L2.7), care nu există încă. Scrisă aici, ar
-    fi al doilea mecanism de decizie din sistem, contrazicându-l tăcut pe primul
-    — exact motivul pentru care depozitul nu are prag propriu.
+    decizia benzii de incertitudine (§L2.7). Scrisă aici, ar fi al doilea
+    mecanism de decizie din sistem, contrazicându-l tăcut pe primul — exact
+    motivul pentru care depozitul nu are prag propriu. De la P2.6 maparea
+    există, în banda minimă (`app/services/uncertainty_band.py`), iar cifra ei
+    se publică separat, în secțiunea `band` (METRICS.md §3.7).
 
     Concret, întrebarea deschisă e `known_software`: un fișier prezent în RDS e
     cunoscut, dar `CORPUS.md` §5.4 interzice să fie declarat curat, deci axa de
@@ -101,8 +103,9 @@ def compute_reputation_metrics(
             "eveniment cu treapta T0 si dispozitia unknown a divulgat la T0 fara "
             "sa se inchida acolo. Nu se publica aici o rata de inchidere: "
             "maparea dispozitie -> inchis apartine benzii de incertitudine "
-            "(§L2.7), iar known_software nu poate fi numarat ca inchis fara sa "
-            "incalce CORPUS.md §5.4. reputation_unavailable NU e unknown: primul "
+            "(§L2.7), publicata in sectiunea band (METRICS.md §3.7), iar "
+            "known_software nu poate fi numarat ca inchis fara sa incalce "
+            "CORPUS.md §5.4. reputation_unavailable NU e unknown: primul "
             "spune ca depozitul n-a putut fi intrebat, al doilea ca a fost "
             "intrebat si nu stie. snapshots declara instantaneul care a raspuns "
             "(METRICS.md §8); gol inseamna ca niciun eveniment din perimetru "

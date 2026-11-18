@@ -9,6 +9,15 @@ decide ce merită trimis.
 
 Lucrare de licență.
 
+**Unde a ajuns (18 noiembrie 2026).** Serverul primește evenimente și heartbeat-uri
+autentificate, măsoară pe fir cât a plecat de pe fiecare endpoint și publică
+raportul față de un sistem care ar urca tot. La fiecare fișier cu amprentă spune
+ce se știe despre el la treapta zero: dispoziția din instantaneul de reputație
+(RDS și MalwareBazaar), pe câte mașini l-a văzut parcul și ce ar decide banda
+minimă de incertitudine. Nimic nu escaladează încă în realitate: nu există
+treapta T1 și niciun motor de analiză. Măsurătoarea pe cele cinci endpoint-uri
+de laborator, cu corpusul fixat de 1494 de fișiere, urmează.
+
 ---
 
 ## API
@@ -19,13 +28,22 @@ Lucrare de licență.
 | `/api/agents/register` | POST | secret de înrolare **sau** cheie de agent | înrolează sau re-înregistrează, emite cheia |
 | `/api/agents/{id}/heartbeat` | POST | cheia lui `{id}` | starea agentului, verdict de continuitate, directive |
 | `/api/events` | POST | cheia agentului din corp | ingestie idempotentă de evenimente |
+| `/api/runs/{eticheta}` | POST | secret de operator | deschide o rulare de măsurătoare cu nume |
+| `/api/agents/monitoring` | GET | secret de operator | ce endpoint-uri sunt supravegheate și tranzițiile lor |
 | `/api/agents` | GET | **nimic** | inventarul parcului |
-| `/api/events` | GET | **nimic** | fluxul de evenimente |
-| `/api/metrics/disclosure` | GET | **nimic** | raportul divulgare / always-upload |
+| `/api/events` | GET | **nimic** | fluxul de evenimente al unei rulări |
+| `/api/metrics/disclosure` | GET | **nimic** | raportul divulgare / always-upload, cu toate cifrele de mai jos |
+| `/api/runs`, `/api/runs/current` | GET | **nimic** | catalogul rulărilor și rularea curentă |
 
-Cele trei rute de citire sunt deliberat deschise în acest pas — analistul nu are
-încă un secret propriu. E o gaură cunoscută, urmărită ca issue, nu o scăpare;
-ce garantează totuși proiectarea e că prin ele **nu se scurg credențiale**.
+Rutele de citire primesc `run_id=<eticheta>` sau `all_runs=true`; implicit
+descriu rularea curentă. Metrica primește și `agent_id`.
+
+Secretul de operator e, deocamdată, chiar secretul de înrolare, trimis în
+antetul `X-Enrollment-Secret` — singura credențială de nivel de operator care
+există (edr-server#12). Cele cinci rute de citire sunt deliberat deschise în
+acest pas, fiindcă analistul nu are încă un secret propriu. E o gaură cunoscută,
+urmărită ca issue (edr-server#9), nu o scăpare; ce garantează totuși proiectarea
+e că prin ele **nu se scurg credențiale** și nici lista mașinilor oarbe.
 
 Contractul complet al antetelor: [contracts/AUTH.md](contracts/AUTH.md).
 Contractul corpurilor: [contracts/wire-contract.json](contracts/wire-contract.json).
@@ -106,6 +124,18 @@ ceară niciun câmp nou și fără să creadă ceasul endpoint-ului.
 Retransmisiile aceluiași `client_event_id` nu creează duplicate — ceea ce face
 livrarea *at-least-once* a agentului sigură de folosit.
 
+### Supravegherea, nu doar prezența
+
+Un agent poate fi `online` și orb în același timp: heartbeat-ul merge, dar
+spool-ul nu s-a deschis, un director lipsește sau un fir a murit. De aceea
+fiecare heartbeat poartă câmpul `monitoring` (`active`, `partial`,
+`spool_unavailable`, `monitor_unavailable`, `stopped`), iar la fiecare schimbare
+serverul creează evenimentul `agent_monitoring_changed`, persistat cu eticheta
+rulării. Starea nu apare pe rutele publice, fiindcă lista mașinilor oarbe e o
+hartă de țintire; se citește prin `GET /api/agents/monitoring`, cu secretul de
+operator. Câmpul e declarat de agent despre el însuși, deci prinde defecte, nu
+sabotaj.
+
 ---
 
 ## Măsurătoarea pe care o deține serverul
@@ -117,7 +147,29 @@ Agentul trimite amprente, nu conținut. Serverul e locul unde se poate spune
 GET /api/metrics/disclosure
 ```
 
-Pe măsurarea de referință — 444 de fișiere, 143,1 MiB, prin lanțul real:
+| Secțiune | Ce spune | Definiția |
+|---|---|---|
+| `run` | ce rulare descrie cifra și cine a numit-o | `METRICS.md` §9 |
+| `always_upload`, `progressive`, `ratio` | numitorul, numărătorul și raportul lor | §1, §2 |
+| `unmeasured` | ce n-a putut fi măsurat, pe cauze | §2.1, §2.2 |
+| `calibration` | cât greșește estimatorul față de fir | §7.6 |
+| `by_tier` | ce s-a divulgat pe fiecare treaptă | §3.4 |
+| `measured`, `reconciliation` | octeții numărați pe fir și dacă agentul și serverul se încadrează unul pe altul | §7 |
+| `reputation` | dispozițiile de la T0 | §3.5 |
+| `prevalence` | pe câte mașini a văzut parcul fiecare conținut | §3.6 |
+| `band` | ce ar decide banda minimă la T0 | §3.7 |
+
+**Numărătorul e măsurat, nu estimat.** Agentul declară în antete câți octeți a
+pus pe fir, serverul numără ce a primit, iar raportul folosește octeții numărați
+de server (`numerator_source: measured`). Când măsurătoarea lipsește sau descrie
+alt experiment, cifra revine la estimare și spune asta. **Numitorul** e
+`conținut + plic`: `file_size` e obligatoriu prin contract la orice eveniment cu
+amprentă validă, iar plicul e corpul cererii care a adus evenimentul, măsurat
+cu aceeași riglă ca numărătorul (edr-server#14). `always_upload.concentration`
+spune cât din numitor vine de la fișierul cel mai mare și de la fiecare agent.
+
+**Prima cifră, cu definiția ei de atunci.** Pe 25–26 august 2026, pe un corpus
+sintetic de 444 de fișiere (143,1 MiB), prin lanțul real:
 
 | | octeți |
 |---|---:|
@@ -125,11 +177,11 @@ Pe măsurarea de referință — 444 de fișiere, 143,1 MiB, prin lanțul real:
 | a primit efectiv | 264.593 |
 | conținut de fișier | 0 |
 
-**De ~567 de ori mai puțin.**
-
-Numitorul nu e estimat: `file_size` e obligatoriu prin contract la orice
-eveniment cu amprentă validă, cu motivul scris acolo — nu se poate reconstrui
-retroactiv dacă fișierul s-a schimbat între timp.
+Adică de ~567 de ori mai puțin. Cifra e a metricii de atunci: numărător estimat
+din evenimentele stocate, numitor fără plic. N-a fost recalculată sub definiția
+de azi, iar corpusul ei, cu fișiere umplute cu un singur octet repetat, nu spune
+nimic despre parc. Cifra lucrării va veni din măsurătoarea pe cele cinci
+endpoint-uri.
 
 Metrica ține separat **conținutul divulgat** de **costul metadatelor**. Zero
 conținut nu înseamnă cost zero: canalul de evenimente circulă la fiecare fișier
@@ -167,9 +219,27 @@ auth_service.list_key_records()   # amprente, niciodată chei
 ```
 
 Are efect după repornirea serverului — cheile trăiesc în memoria procesului. E o
-limitare cunoscută, urmărită ca issue.
+limitare cunoscută, urmărită ca issue (edr-server#10).
 
-Testele — **409**:
+### Rularea de măsurătoare
+
+Fiecare eveniment poartă eticheta rulării în care a sosit. La pornire serverul
+deschide singur o rulare `auto-...`; un experiment se face sub o etichetă dată de
+operator, deschisă înainte ca agenții să trimită ce trebuie măsurat:
+
+```bash
+curl -s http://<server>:8000/api/runs/current
+curl -s -X POST -H "X-Enrollment-Secret: <secret>" http://<server>:8000/api/runs/<eticheta>
+```
+
+Eticheta are cel mult 64 de caractere (litere, cifre, `.`, `_`, `-`, cu început
+alfanumeric), nu poate începe cu `auto-` și nu poate fi `current`. **O etichetă
+folosită o dată nu se mai poate redeschide** (409), iar o repornire a serverului
+deschide o rulare `auto-` nouă, deci un experiment întrerupt continuă sub alt
+nume. Numărătorul măsurat descrie procesul curent, așa că metrica se citește
+înainte să deschizi altă rulare în același proces (`METRICS.md` §7.5, §9).
+
+Testele — **473**:
 
 ```bash
 .venv/bin/python -m pytest app/tests -q
@@ -210,8 +280,12 @@ costul per endpoint ar fi constant în dimensiunea parcului.
 tranzitoriu; serverul are 66 liberi. Dar motivul nu e aritmetic: într-un mediu
 izolat, o bază de reputație nu se construiește în rețeaua închisă — se
 construiește afară și se livrează ca artefact, aceeași mișcare ca la coborârea
-rulesetului. Din cele cinci module `reputation_*`, doar `reputation_store.py`
-rulează pe server; restul rulează pe gazdă și n-ar putea rula aici.
+rulesetului. Construirea și verificarea (`reputation_import_rds.py`,
+`reputation_import_bazaar.py`, `reputation_build.py`, `reputation_coverage.py`)
+rulează pe gazdă și n-ar putea rula aici. Pe server rulează doar citirea
+(`reputation_store.py`), dispoziția la ingestie (`reputation_disposition.py`) și
+cifra publicată (`reputation_metrics.py`); `reputation_probe.py` merge oriunde
+se află instantaneul.
 
 ### Construirea, pe gazdă
 
@@ -234,7 +308,7 @@ python3 -m zipfile -e RDS_2026.03.1_modern_minimal.zip rds_2026/
 | descărcare | 45 min | 18,8 GB |
 | dezarhivare | 50 min | 169 GiB |
 | import, 432,9 M rânduri citite | ~2 h | 3,5 GB |
-| sigilare | 10 min | 3,06 GB |
+| sigilare | 10 min | 3,06 GiB (3,28 GB) |
 
 Importul RDS e reluabil: `Ctrl+C` oricând, iar reluarea continuă de la ultima
 amprentă comisă și ajunge în aceeași stare ca o rulare neîntreruptă. Baza de lucru
@@ -244,7 +318,7 @@ deschide read-only fără drept de scriere, fiindcă cititorul are nevoie să cr
 `-wal` și `-shm`.
 
 După sigilare se șterg baza NIST și `.build`. Pe server pleacă doar fișierul de
-3,06 GB.
+3,06 GiB.
 
 ### Verificarea, înainte de livrare
 
@@ -326,8 +400,8 @@ eveniment perfect valid.
 spune ce se știe; două mecanisme de decizie în același răspuns s-ar contrazice pe
 tăcute, iar decizia aparține benzii de incertitudine.
 
-**Ce se persistă:** dispoziția, în evenimentul stocat — deci „câte fișiere s-au
-închis la T0 în rularea X" se poate reconstrui după ce răspunsul a plecat. La o
+**Ce se persistă:** dispoziția, în evenimentul stocat — deci ce știa serverul la
+T0 în rularea X se poate reconstrui după ce răspunsul a plecat. La o
 retransmisie se păstrează dispoziția PRIMEI sosiri, nu a instantaneului de acum;
 altfel același eveniment ar avea două adevăruri după un schimb de instantaneu.
 Identitatea instantaneului se consemnează o dată **pe rulare**, în tabelul
@@ -338,7 +412,8 @@ Cifra publicată e la `GET /api/metrics/disclosure`, în secțiunea `reputation`
 cu numitorul ei propriu (`events_with_hash`) și cu instantaneul declarat. E o
 cifră **separată** de tabelul pe trepte: acela numără ce a declarat agentul că a
 divulgat, aceasta numără ce a conchis serverul. Vezi `METRICS.md` 3.5, inclusiv
-motivul pentru care nu se publică o rată de închidere.
+motivul pentru care acolo nu se publică o rată de închidere: decizia de
+închidere e a benzii minime, mai jos.
 
 ### Interogarea, de mână
 
@@ -353,6 +428,70 @@ Ce ar răspunde serverul pentru o amprentă anume, fără server pornit:
 instantaneului. Unealta trece prin exact codul folosit de ingestie și declară
 amprenta, sursele și brațul ablației — dar **nu scrie nimic**: nu consemnează
 nicio rulare, deci nu atinge un experiment în curs.
+
+---
+
+## Prevalența în parc
+
+Instantaneul e cunoaștere împrumutată. Prevalența e prima cunoaștere care e a
+parcului: la fiecare eveniment cu amprentă, serverul notează perechea
+(conținut, mașină) și răspunde, în același răspuns:
+
+```json
+"prevalence": { "agents": 3, "park_agents": 5, "first_seen": "…" }
+```
+
+- **Numără mașini, nu evenimente.** O mașină care rescrie un fișier de 500 de ori
+  nu e un parc. `agents` include mașina care tocmai a raportat, deci primul
+  endpoint primește `1`, niciodată `0`; `park_agents` e numitorul.
+- **E globală peste rulări** și nu se amprentează, fiindcă se schimbă chiar în
+  timpul rulării. Se declară în schimb starea de plecare a fiecărei rulări
+  (tabelul `run_prevalence`).
+- **Valoarea stocată e cea de la prima sosire**, ca la dispoziție; prevalența
+  curentă e o interogare separată.
+- **E interzisă pe cerere.** Un endpoint care și-ar declara singur prevalența
+  și-ar putea fabrica propria închidere.
+
+Cifra publicată e histograma, în secțiunea `prevalence` (`METRICS.md` 3.6).
+Condusă cu planul de plasare al corpusului, pe amprente sintetice, a ieșit exact
+cum fusese pre-înregistrată: `{1: 363, 2: 64, 3: 21, 5: 1046}`.
+
+---
+
+## Banda minimă de incertitudine, la T0
+
+Dispoziția și prevalența sunt dovezi. Banda e locul unde dovezile devin o
+decizie: pentru fiecare eveniment cu amprentă, serverul decide dacă fișierul s-ar
+închide la T0 sau ar urca pe scară. **Nimic nu escaladează încă în realitate:**
+`next_action` rămâne `"none"`, iar decizia stă în depozitul serverului (tabelul
+`event_band`), nu în răspuns.
+
+Un tabel de decizie, nu un scor (`app/services/uncertainty_band.py`, politica
+`t0-min-1`). Primul rând care se potrivește câștigă:
+
+| dispoziție | văzut înainte în parc | decizie |
+|---|---|---|
+| `known_malicious`, `both_axes` | oricum | `close_threat` |
+| `reputation_unavailable` | oricum | `hold` |
+| `unknown` | nu | `escalate` |
+| `unknown` | da | `inherit` |
+| `known_software` | oricum | `close_known` |
+
+**Prevalența nu închide benign nimic.** Regula „răspândit pe multe mașini, deci
+bun" ar transforma malware-ul de pe trei mașini din cinci în ratări construite
+prin proiectare. Aici prevalența înseamnă doar că parcul a plătit deja
+escaladarea conținutului (`inherit`): un fișier necunoscut escaladează o dată, pe
+prima mașină, iar celelalte moștenesc verdictul. Rândul de amenințare e primul,
+deci un fișier malițios cunoscut se închide ca amenințare oricât de răspândit
+ar fi.
+
+Cifra publicată e **tabelul**, în secțiunea `band` (`METRICS.md` 3.7): celulele
+dispoziție × văzut înainte × prevalență la sosire, din care se citește orice
+politică fără altă rulare. Alături stau ambele politici pre-înregistrate
+(`t0-min-1` și varianta strictă, care tratează `known_software` ca `unknown`),
+plus golurile. Predicția pentru măsurătoare, scrisă înainte: 589 de escaladări în
+brațul semiînzestrat, câte una per conținut necunoscut, și 919 în brațul rece.
+Banda e verificată deocamdată doar de teste, nu pe parc.
 
 ---
 
@@ -388,8 +527,11 @@ simptomul. Urma scrisă a problemelor găsite face parte din valoarea lucrării.
 
 **Verificare manuală end-to-end**, cu agentul pe altă mașină: chei greșite,
 identități împrumutate, revocări, restarturi de server cu registru volatil.
+Serverul rulează ca serviciu systemd pe un VM de laborator din 22 octombrie 2026,
+iar din 17 noiembrie cele cinci endpoint-uri Windows clonate au fiecare
+identitate proprie și s-au înregistrat ca agenți distincți.
 
-35 de commituri, 7 issue-uri închise.
+La 18 noiembrie 2026: 10 issue-uri închise și 4 deschise.
 
 ---
 
@@ -428,27 +570,54 @@ Partea de server a lucrării:
    lucrării. Câmpurile care ar readuce verdictul de benignitate sunt declarate
    interzise în contract, deci o redenumire pică testele, nu revizuirea unui om.
 
+8. **Prevalența ca memorie a parcului, nu ca dovadă de benignitate.** Banda
+   minimă folosește prevalența doar ca să nu plătească de două ori escaladarea
+   aceluiași conținut, niciodată ca să închidă un fișier ca bun. Decizia e un
+   tabel publicat celulă cu celulă, deci și o altă politică se poate citi din
+   aceeași rulare, fără să fie aleasă după ce se văd datele.
+
 ---
 
 ## Future work
 
-**Mașina de stări per fișier.** Determinarea autoritară a noutății: prima
-apariție a acestui hash la această cale. E deja declarată în contract ca
-responsabilitate a serverului, dar neimplementată. Prevalența există de la P2.4,
-iar banda minimă (P2.6) decide la T0 dacă un eveniment s-ar închide sau ar
-escalada, fără nicio escaladare reală. Până la mașina de stări, noutatea benzii e
-„prima vedere a conținutului în parc", nu „prima apariție la această cale" — iar
-`collect_file_path` din directiva de heartbeat rămâne un câmp nefolosit.
+**Măsurătoarea pe parc.** Corpusul de 1494 de fișiere pe cele cinci
+endpoint-uri, adăugate pe rând, cu ordinea fixată dinainte și serverul pornit pe
+toată durata rulării. De ea depind costul marginal per endpoint (`METRICS.md`
+3.1) și verificarea predicțiilor scrise pentru prevalență și pentru bandă.
 
-**Registrul de divulgare.** Contabilizarea fiecărui octet care a părăsit un
-endpoint, ca garanția „niciun conținut pe canalul de evenimente" să fie
-verificată semantic, nu doar prin forma numelor de câmpuri.
+**Treapta T1 și escaladarea reală.** Banda decide azi că un fișier ar escalada,
+dar nimeni nu cere nimic: `next_action` rămâne `"none"`, iar `collect_file_path`
+din directiva de heartbeat e un câmp nefolosit. Fără un motor de analiză nu
+există nici oracolul din `METRICS.md` 4.
+
+**Mașina de stări per fișier.** Determinarea autoritară a noutății: prima
+apariție a acestui hash la această cale. E declarată în contract ca
+responsabilitate a serverului, dar neimplementată. Până atunci, noutatea benzii
+e „prima vedere a conținutului în parc", nu „prima apariție la această cale".
+
+**Direcția descendentă, nemăsurată.** Contabilizarea de fir numără doar ce
+primește serverul. Blocurile `reputation` și `prevalence` din răspuns nu intră
+în nicio cifră (`METRICS.md` 1.2).
+
+**Mediana și p95 per fișier.** Plicul fiecărui eveniment e consemnat de server,
+deci distribuția din `METRICS.md` 3.2 se poate calcula, dar nu se calculează
+încă.
+
+**Vederea și evenimentul în aceeași tranzacție.** Azi vederea se scrie în
+registrul de prevalență înaintea evenimentului. Dacă inserarea evenimentului
+pică, retransmisia își găsește propria vedere și primește `inherit`; cazul se
+vede în cifră (`inherited_without_escalation`), dar nu e prevenit.
+
+**Verificarea semantică a canalului de evenimente.** Garanția „niciun conținut pe
+canalul de evenimente" e apărată azi prin forma numelor de câmpuri, nu prin ce
+conțin.
 
 **Autentificarea rutelor de citire**, împreună cu un secret propriu pentru
-analist și drepturi distincte de cele ale agenților.
+analist și operator, cu drepturi distincte de cele ale agenților
+(edr-server#9, edr-server#12).
 
 **Revocare fără repornire.** Astăzi o revocare rescrie fișierul, dar procesul
-care rulează ține cheile în memorie și nu îl recitește.
+care rulează ține cheile în memorie și nu îl recitește (edr-server#10).
 
 **Persistență reală, jumătatea rămasă.** `agents_store` e încă o structură în
 memorie. Depozitul de chei a fost persistat primul, pentru că altfel repornirea
@@ -459,6 +628,6 @@ golește, iar continuitatea se reconstruiește din heartbeat-uri.
 
 **TLS.** Terminarea TLS și emiterea certificatelor. Astăzi cheia de API circulă
 în clar, iar autentificarea apără împotriva unui client fără secret, nu împotriva
-unui ascultător pe traseu.
+unui ascultător pe traseu (edr-server#8).
 
 Problemele deschise: [issues](https://github.com/ZiGabiZi/edr-server/issues).

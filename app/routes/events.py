@@ -65,9 +65,11 @@ def receive_event(
     created_event = create_event(event, body_bytes=declared_body_bytes(request))
 
     # `next_action` rămâne "none": e o DIRECTIVĂ, iar directivele aparțin benzii
-    # de incertitudine și canalului de heartbeat. Dispoziția de treaptă care vine
-    # la P2.3 spune ce se ȘTIE, nu ce trebuie făcut, și nu are voie să ajungă
-    # aici — două mecanisme de decizie în același răspuns se contrazic pe tăcute.
+    # de incertitudine și canalului de heartbeat. Dispoziția de treaptă (P2.3) și
+    # prevalența (P2.4) din evenimentul întors spun ce se ȘTIE, nu ce trebuie
+    # făcut. Decizia benzii minime (P2.6) există, dar rămâne în depozit
+    # (`event_band`): nicio escaladare reală nu e încă cerută agentului, iar
+    # două mecanisme de decizie în același răspuns s-ar contrazice pe tăcute.
     return EventCreateResponse(
         message="Event received successfully",
         event=created_event,

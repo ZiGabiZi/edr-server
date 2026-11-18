@@ -378,15 +378,18 @@ class EventCreateResponse(BaseModel):
     care contractul o descrie la heartbeat_response, doar ca acolo exista macar
     un contract deasupra.
 
-    Se declara ACUM, inainte sa poarte ceva: P2.3 pune aici dispozitia de treapta
-    produsa de depozitul de reputatie. Un canal care capata primul mecanism
-    vizibil al protocolului inainte de contract e un canal in care redenumirea se
-    descopera in celalalt repo, peste luni.
+    S-a declarat la v6, inainte sa poarte ceva: un canal care capata primul
+    mecanism vizibil al protocolului inainte de contract e un canal in care
+    redenumirea se descopera in celalalt repo, peste luni. De atunci evenimentul
+    intors poarta dispozitia de treapta (P2.3) si prevalenta (P2.4).
 
-    `next_action` ramane "none" si ramane o DIRECTIVA — ce trebuie facut. Ce vine
-    la P2.3 e o DISPOZITIE — ce se stie la adancimea T0. Confundate, ar exista
-    doua mecanisme de decizie in acelasi raspuns, iar banda de incertitudine
-    (§L2.7) ar fi contrazisa pe tacute de un camp care nu-i apartine.
+    `next_action` ramane "none" si ramane o DIRECTIVA — ce trebuie facut.
+    Dispozitia e ce se stie la adancimea T0. Confundate, ar exista doua
+    mecanisme de decizie in acelasi raspuns, iar banda de incertitudine (§L2.7)
+    ar fi contrazisa pe tacute de un camp care nu-i apartine. Banda minima
+    (P2.6) decide deja la T0, dar decizia sta in depozit (`event_band`), nu aici:
+    pana cand agentul poate executa o escaladare, o directiva pe fir n-ar avea
+    pe cine sa comande.
     """
 
     message: str

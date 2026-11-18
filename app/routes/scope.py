@@ -93,7 +93,8 @@ class RunScope:
             "note": (
                 "Cifrele descriu doar evenimentele sosite in aceasta rulare. "
                 "source=operator inseamna ca eticheta a fost data de un om si "
-                "poate fi legata de intrarea de tip masuratoare din jurnal; "
+                "poate fi legata de fisa de masuratoare din jurnal (METRICS.md "
+                "§9.2); "
                 "source=generated inseamna ca a inventat-o serverul la pornire."
             ),
         }
