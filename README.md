@@ -169,7 +169,7 @@ auth_service.list_key_records()   # amprente, niciodată chei
 Are efect după repornirea serverului — cheile trăiesc în memoria procesului. E o
 limitare cunoscută, urmărită ca issue.
 
-Testele — **363**:
+Testele — **409**:
 
 ```bash
 .venv/bin/python -m pytest app/tests -q
@@ -177,6 +177,25 @@ Testele — **363**:
 
 Verificările cross-repo cer clona `edr-agent` alături. Absența ei e skip local și
 eșec sub CI; `EDR_REQUIRE_PEER_REPO` forțează oricare comportament.
+
+
+### Pe VM, ca serviciu
+
+Pe VM-ul de laborator serverul rulează sub systemd. Pregătirea se face o
+singură dată, după un snapshot: actualizări, SSH doar cu cheie, firewall
+deschis doar rețelei de laborator, serviciul și dreptul de a-l reporni fără
+parolă. Efectul rămâne în `/etc`, nu în repo.
+
+```bash
+sudo bash deploy/setup-vm.sh --allow-service-control
+sudo systemctl restart edr-server     # după o modificare de cod
+journalctl -u edr-server -f           # ieșirea live
+```
+
+Portul se deschide abia după amprenta lui `reputation.db`: ~10 s cu fișierul
+în cache, până la câteva minute după un boot la rece. Agentul reîncearcă
+singur, deci nu trebuie oprit. Oprirea se face cu `systemctl stop` sau „Shut
+Down Guest”, nu cu Power Off, ca jurnalul WAL să ajungă în `edr_server.db`.
 
 ---
 
@@ -415,9 +434,11 @@ Partea de server a lucrării:
 
 **Mașina de stări per fișier.** Determinarea autoritară a noutății: prima
 apariție a acestui hash la această cale. E deja declarată în contract ca
-responsabilitate a serverului, dar neimplementată. Fără ea nu există prevalență,
-deci nici decizie de escaladare — iar `collect_file_path` din directiva de
-heartbeat rămâne un câmp nefolosit.
+responsabilitate a serverului, dar neimplementată. Prevalența există de la P2.4,
+iar banda minimă (P2.6) decide la T0 dacă un eveniment s-ar închide sau ar
+escalada, fără nicio escaladare reală. Până la mașina de stări, noutatea benzii e
+„prima vedere a conținutului în parc", nu „prima apariție la această cale" — iar
+`collect_file_path` din directiva de heartbeat rămâne un câmp nefolosit.
 
 **Registrul de divulgare.** Contabilizarea fiecărui octet care a părăsit un
 endpoint, ca garanția „niciun conținut pe canalul de evenimente" să fie

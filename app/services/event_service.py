@@ -17,6 +17,7 @@ from app.services import (
     measurement_run,
     prevalence,
     reputation_disposition,
+    uncertainty_band,
 )
 
 
@@ -97,6 +98,9 @@ def create_event(event: EventCreateRequest, body_bytes: Optional[int] = None) ->
     """
     run_id = measurement_run.current_run_id()
 
+    reputation = reputation_disposition.for_event(event.sha256, run_id)
+    observed = prevalence.observe(event.sha256, event.agent_id, run_id)
+
     new_event = {
         "agent_id": event.agent_id,
         "agent_instance_id": event.agent_instance_id,
@@ -108,8 +112,8 @@ def create_event(event: EventCreateRequest, body_bytes: Optional[int] = None) ->
         "file_size": event.file_size,
         "measurements": event.measurements.model_dump() if event.measurements else None,
         "disclosure": event.disclosure.model_dump() if event.disclosure else None,
-        "reputation": reputation_disposition.for_event(event.sha256, run_id),
-        "prevalence": prevalence.for_event(event.sha256, event.agent_id, run_id),
+        "reputation": reputation,
+        "prevalence": observed[0] if observed is not None else None,
         "description": event.description,
         "occurred_at": event.occurred_at,
         "received_at": utc_now(),
@@ -117,7 +121,15 @@ def create_event(event: EventCreateRequest, body_bytes: Optional[int] = None) ->
         "status": "received",
     }
 
-    stored = event_store.insert_event(new_event, body_bytes=body_bytes)
+    # Banda minimă (P2.6): decizia din dispoziția și prevalența de mai sus, deci
+    # din cele ale PRIMEI sosiri — la o retransmisie depozitul nu scrie rândul a
+    # doua oară. Stă în `event_band`, nu în payload: payload-ul e răspunsul rutei,
+    # iar forma deciziei pe fir e `next_action`, care rămâne "none".
+    band = uncertainty_band.for_event(
+        reputation, observed[1] if observed is not None else None
+    )
+
+    stored = event_store.insert_event(new_event, body_bytes=body_bytes, band=band)
 
     # Rularea evenimentului STOCAT, nu cea curentă: la o retransmisie, cele două
     # diferă, iar cea care contează pentru atribuirea măsurătorii e rularea în

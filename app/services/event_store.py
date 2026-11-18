@@ -99,7 +99,7 @@ import os
 import sqlite3
 import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 
 logger = logging.getLogger(__name__)
@@ -252,6 +252,31 @@ _SCHEMA = (
         CHECK (body_bytes > 0)
     )
     """,
+    # Decizia benzii minime la T0, pentru fiecare eveniment cu hash (P2.6, B6).
+    #
+    # De ce un tabel și nu un bloc în payload: evenimentul stocat se întoarce în
+    # răspunsul rutei, care e contract (`event_create_response.event`). Un bloc
+    # `band` acolo ar urca pe fir și ar cere o versiune nouă de contract, deși
+    # forma deciziei pe fir e `next_action`, care rămâne "none". Același
+    # precedent ca `event_wire`: ajunge în depozit, nu în răspuns.
+    #
+    # `prior_sighting` stă aici și nu în blocul `prevalence` din același motiv:
+    # blocul acela e pe fir (v9). E intrarea benzii, nu dovadă pentru agent.
+    #
+    # `CHECK` pe vocabular: o decizie scrisă greșit ar intra tăcut într-o
+    # celulă pe care tabelul publicat n-o cunoaște.
+    """
+    CREATE TABLE IF NOT EXISTS event_band (
+        event_id       INTEGER NOT NULL PRIMARY KEY,
+        policy         TEXT NOT NULL,
+        decision       TEXT NOT NULL,
+        prior_sighting INTEGER NOT NULL,
+
+        CHECK (decision IN
+            ('close_threat', 'hold', 'escalate', 'inherit', 'close_known')),
+        CHECK (prior_sighting IN (0, 1))
+    )
+    """,
 )
 
 
@@ -263,6 +288,11 @@ _INSERT_EVENT = """
 
 _INSERT_EVENT_WIRE = """
     INSERT INTO event_wire (event_id, body_bytes) VALUES (?, ?)
+"""
+
+_INSERT_EVENT_BAND = """
+    INSERT INTO event_band (event_id, policy, decision, prior_sighting)
+    VALUES (?, ?, ?, ?)
 """
 
 
@@ -346,7 +376,9 @@ def _row_to_event(event_id: int, payload: str) -> Dict[str, Any]:
 
 
 def insert_event(
-    event: Dict[str, Any], body_bytes: Optional[int] = None
+    event: Dict[str, Any],
+    body_bytes: Optional[int] = None,
+    band: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Persistă un eveniment și îi întoarce forma stocată, cu event_id din bază.
@@ -358,6 +390,12 @@ def insert_event(
     numărătorul măsurat, deci asimetria care rămâne poate face protocolul să
     pară cel mult mai scump, niciodată mai ieftin. `None` sau zero — corp fără
     dimensiune declarată — nu lasă niciun rând, iar metrica raportează golul.
+
+    `band` e decizia benzii minime (`policy`, `decision`, `prior_sighting`).
+    Se consemnează în `event_band`, tot numai la prima inserare și în aceeași
+    tranzacție: la o retransmisie rămâne decizia primei sosiri, luată din
+    dispoziția și prevalența primei sosiri (M9). `None` — eveniment fără hash
+    sau cu o dispoziție pe care banda n-o cunoaște — nu lasă niciun rând.
 
     Dacă `client_event_id` există deja, NU se scrie nimic și se întoarce
     evenimentul care era deja acolo — aceeași semantică de idempotență ca
@@ -393,6 +431,17 @@ def insert_event(
             if cursor.rowcount == 1 and body_bytes:
                 connection.execute(
                     _INSERT_EVENT_WIRE, (cursor.lastrowid, int(body_bytes))
+                )
+
+            if cursor.rowcount == 1 and band is not None:
+                connection.execute(
+                    _INSERT_EVENT_BAND,
+                    (
+                        cursor.lastrowid,
+                        band["policy"],
+                        band["decision"],
+                        1 if band["prior_sighting"] else 0,
+                    ),
                 )
 
             connection.commit()
@@ -499,6 +548,66 @@ def envelope_bytes_by_event(run_id: Optional[str] = None) -> Dict[int, int]:
             raise EventStoreError(f"Could not read envelopes: {error}") from error
 
     return {event_id: body_bytes for event_id, body_bytes in rows}
+
+
+def band_by_event(run_id: Optional[str] = None) -> Dict[int, Dict[str, Any]]:
+    """
+    Decizia benzii a evenimentelor care o au, `event_id → rând`.
+
+    Ca `envelope_bytes_by_event`: filtrarea pe rulare în SQL, iar evenimentele
+    fără rând lipsesc din dicționar. Lipsa e golul `hashed_events_without_band`,
+    nu o decizie implicită.
+    """
+    query = (
+        "SELECT b.event_id, b.policy, b.decision, b.prior_sighting "
+        "FROM event_band AS b"
+    )
+    parameters: tuple = ()
+
+    if run_id is not None:
+        query += " JOIN events AS e ON e.event_id = b.event_id WHERE e.run_id = ?"
+        parameters = (run_id,)
+
+    with _lock:
+        connection = _connection_locked()
+
+        try:
+            rows = connection.execute(query, parameters).fetchall()
+        except sqlite3.Error as error:
+            raise EventStoreError(f"Could not read band decisions: {error}") from error
+
+    return {
+        event_id: {
+            "policy": policy,
+            "decision": decision,
+            "prior_sighting": bool(prior),
+        }
+        for event_id, policy, decision, prior in rows
+    }
+
+
+def escalated_hashes() -> Set[str]:
+    """
+    Conținuturile (hex) pentru care cel puțin un eveniment a primit `escalate`.
+
+    GLOBAL, peste toate rulările, ca registrul de prevalență: un `inherit`
+    moștenește escaladarea parcului, iar parcul nu se golește când operatorul
+    redenumește experimentul. Din asta se calculează
+    `inherited_without_escalation` — moșteniri care n-au de la cine moșteni.
+    """
+    with _lock:
+        connection = _connection_locked()
+
+        try:
+            rows = connection.execute(
+                "SELECT DISTINCT json_extract(e.payload, '$.sha256') "
+                "FROM event_band AS b JOIN events AS e ON e.event_id = b.event_id "
+                "WHERE b.decision = 'escalate'"
+            ).fetchall()
+        except sqlite3.Error as error:
+            raise EventStoreError(f"Could not read escalations: {error}") from error
+
+    return {row[0].lower() for row in rows if row[0]}
 
 
 def count_events(run_id: Optional[str] = None) -> int:
@@ -740,6 +849,17 @@ def record_and_count_sighting(
         connection = _connection_locked()
 
         try:
+            # „Văzut înainte în parc" (P2.6, B5): există vreun rând pentru
+            # conținut ÎNAINTE de inserarea de acum, indiferent de mașină. Nu se
+            # poate deduce din `agents == 1` după inserare: a doua vedere a
+            # aceluiași conținut pe ACEEAȘI mașină tot 1 dă, deci banda ar
+            # escalada de două ori același conținut. Citit sub același lacăt cu
+            # scrierea, ca două cereri simultane să nu creadă amândouă că sunt
+            # prima vedere.
+            prior = connection.execute(
+                "SELECT 1 FROM prevalence WHERE sha256 = ? LIMIT 1", (hash_brut,)
+            ).fetchone()
+
             connection.execute(
                 "INSERT INTO prevalence (sha256, agent_id, first_seen, last_seen) "
                 "VALUES (?, ?, ?, ?) "
@@ -756,7 +876,11 @@ def record_and_count_sighting(
         except sqlite3.Error as error:
             raise EventStoreError(f"Could not record a sighting: {error}") from error
 
-    return {"agents": row[0], "first_seen": row[1]}
+    return {
+        "agents": row[0],
+        "first_seen": row[1],
+        "prior_sighting": prior is not None,
+    }
 
 
 def prevalence_of(sha256: bytes) -> Dict[str, Any]:

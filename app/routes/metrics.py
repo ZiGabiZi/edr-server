@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query
 from app.routes.scope import RunScope, RunScopeDependency
 from app.services import event_service, event_store, wire_accounting
 from app.services.disclosure_metrics import compute_disclosure_metrics
+from app.services.band_metrics import compute_band_metrics
 from app.services.prevalence_metrics import compute_prevalence_metrics
 from app.services.reputation_metrics import compute_reputation_metrics
 
@@ -212,11 +213,39 @@ def disclosure_metrics(
     # `by_tier` și `reputation` numără evenimente; histograma de mai jos numără
     # conținuturi distincte. Publicate ca un singur tabel, procentele s-ar aduna
     # peste mulțimi diferite și n-ar descrie niciuna.
+    #
+    # „Prima vedere" se citește din rândurile benzii când există (P2.6, B5):
+    # `agents == 1` numără și a doua vedere pe aceeași mașină.
+    band_rows = event_store.band_by_event(
+        None if scope.covers_all_runs else scope.run_id
+    )
     metrics["prevalence"] = compute_prevalence_metrics(
         events,
         event_store.prevalence_counts(),
         event_store.run_prevalences(None if scope.covers_all_runs else scope.run_id),
         event_store.park_agents(),
+        prior_sightings={
+            event_id: row["prior_sighting"] for event_id, row in band_rows.items()
+        },
+    )
+
+    # A patra cifră: banda minimă (P2.6, METRICS.md §3.7). Numitorul e cel de la
+    # `reputation` — evenimente cu hash —, dar tabelul nu se contopește cu el:
+    # aici fiecare celulă poartă și „văzut înainte", care e intrarea benzii.
+    # Escaladările se citesc GLOBAL, nu pe rulare: un `inherit` moștenește
+    # escaladarea parcului, care poate fi dintr-o rulare anterioară.
+    #
+    # Evenimentele, rândurile de bandă și escaladările se citesc în trei
+    # interogări, nu într-o singură tranzacție. Rândul de bandă se scrie în
+    # aceeași tranzacție cu evenimentul, deci fiecare eveniment din `events` își
+    # are rândul; rândurile sosite între timp nu se caută. Escaladările, citite
+    # ultimele, pot include evenimente mai noi decât lista, deci
+    # `inherited_without_escalation` poate ieși mai mic, cât ține ingestia
+    # concurentă. Nu e o eroare de direcție: un `inherit` se poate insera înaintea
+    # escaladării de la care moștenește, când două prime vederi se suprapun, iar
+    # citirea mai târzie o găsește pe cea pe care lista n-o avea încă.
+    metrics["band"] = compute_band_metrics(
+        events, band_rows, event_store.escalated_hashes()
     )
 
     # Declarația de corpus stă PRIMA în răspuns, nu ultima. Cine deschide

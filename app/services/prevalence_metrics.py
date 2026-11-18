@@ -27,12 +27,13 @@ De ce histograma descrie starea de ACUM, nu ce s-a răspuns atunci:
 
 De ce NU se publică nicio economie:
     „Câte escaladări a evitat parcul" cere să se știe care evenimente ar fi
-    escaladat, iar decizia aia e a benzii de incertitudine (§L2.7), care nu
-    există. Se publică numărătoarea; interpretarea ei rămâne a pasului care are
-    dreptul s-o facă.
+    escaladat, iar decizia aia e a benzii de incertitudine (§L2.7). De la P2.6
+    banda minimă există și își publică propriul tabel (`band`, `METRICS.md`
+    §3.7), unde `inherit` e exact escaladarea evitată. Aici rămâne numărătoarea;
+    interpretarea ei e a benzii.
 """
 
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence
 
 
 def compute_prevalence_metrics(
@@ -40,6 +41,7 @@ def compute_prevalence_metrics(
     counts: Mapping[str, int],
     baselines: Sequence[Dict[str, Any]],
     park_agents: int,
+    prior_sightings: Optional[Mapping[int, bool]] = None,
 ) -> Dict[str, Any]:
     """
     Histograma prevalenței peste conținuturile văzute în evenimentele date.
@@ -47,7 +49,17 @@ def compute_prevalence_metrics(
     `counts` și `baselines` vin din depozit, nu se citesc aici: funcția rămâne
     pură — primește evenimente și stare, întoarce cifre — și se poate testa fără
     server, ca `compute_disclosure_metrics`.
+
+    `prior_sightings` (`event_id → bool`, din `event_band`) decide prima vedere
+    acolo unde există (P2.6, B5). Fără el, regula veche — `agents == 1` —
+    numără ca primă vedere și a doua vedere a aceluiași conținut pe ACEEAȘI
+    mașină, deci invarianta „pe memorie goală, primele vederi = conținuturi
+    distincte" cade exact când o mașină trimite două evenimente pentru același
+    fișier. Evenimentele fără rând păstrează regula veche, iar câte au fost
+    decise așa se publică separat, ca `first_sighting_inferred_from_agents`.
     """
+    known_prior: Mapping[int, bool] = prior_sightings or {}
+    inferred = 0
     hashes: set = set()
     first_sighting = 0
     prior_sighting = 0
@@ -70,10 +82,18 @@ def compute_prevalence_metrics(
             without_prevalence += 1
             continue
 
-        if prevalence.get("agents") == 1:
-            first_sighting += 1
+        event_id = event.get("event_id")
+
+        if event_id is not None and event_id in known_prior:
+            seen_before = known_prior[event_id]
         else:
+            inferred += 1
+            seen_before = prevalence.get("agents") != 1
+
+        if seen_before:
             prior_sighting += 1
+        else:
+            first_sighting += 1
 
     histogram: Dict[str, int] = {}
 
@@ -96,6 +116,7 @@ def compute_prevalence_metrics(
         "events_at_first_sighting": first_sighting,
         "events_with_prior_sighting": prior_sighting,
         "hashed_events_without_prevalence": without_prevalence,
+        "first_sighting_inferred_from_agents": inferred,
         "baselines": list(baselines),
         "note": (
             "Numitorul histogramei e distinct_hashes — CONTINUTURI distincte, nu "
@@ -107,7 +128,12 @@ def compute_prevalence_metrics(
             "s-a raspuns atunci apare separat, ca events_at_first_sighting fata de "
             "events_with_prior_sighting. Nu se publica nicio economie: „cate "
             "escaladari a evitat parcul\" cere sa se stie care evenimente ar fi "
-            "escaladat, iar decizia apartine benzii de incertitudine (L2.7). "
+            "escaladat, iar decizia apartine benzii de incertitudine (L2.7); "
+            "banda minima o publica in sectiunea band, ca inherit. Prima vedere "
+            "se citeste din event_band cand evenimentul are rand (P2.6): agents "
+            "== 1 ar numara si a doua vedere pe aceeasi masina; cate evenimente "
+            "au fost decise inca dupa agents apare ca "
+            "first_sighting_inferred_from_agents. "
             "baselines declara pozitia de plecare a memoriei pentru fiecare rulare "
             "din perimetru — registrul e global si NU se amprenteaza, fiindca se "
             "schimba in timpul rularii."

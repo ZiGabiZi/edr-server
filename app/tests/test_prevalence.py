@@ -380,6 +380,42 @@ def test_on_an_empty_registry_every_content_is_seen_first_exactly_once(
     assert p["events_at_first_sighting"] == p["distinct_hashes"]
 
 
+def test_a_second_sighting_on_the_same_machine_is_not_a_first_sighting():
+    """
+    Aceeași invariantă, pe funcție, exact în cazul care o rupea (P2.6, B5).
+
+    A doua vedere a aceluiași conținut pe ACEEAȘI mașină are tot `agents == 1`.
+    Decisă după `agents`, ar fi a doua primă vedere a unui singur conținut.
+    Rândul de bandă spune `prior_sighting=True`, iar acolo unde rândul există,
+    el decide. Evenimentul fără rând păstrează regula veche și se numără ca
+    dedus, ca să se vadă câte cifre se sprijină încă pe ea.
+    """
+    from app.services.prevalence_metrics import compute_prevalence_metrics
+
+    evenimente = [
+        {"event_id": 1, "sha256": HASH_COMUN, "prevalence": {"agents": 1}},
+        {"event_id": 2, "sha256": HASH_COMUN, "prevalence": {"agents": 1}},
+        {"event_id": 3, "sha256": HASH_UNIC, "prevalence": {"agents": 1}},
+    ]
+    counts = {HASH_COMUN: 1, HASH_UNIC: 1}
+
+    p = compute_prevalence_metrics(
+        evenimente, counts, [], 1, prior_sightings={1: False, 2: True}
+    )
+
+    assert p["events_at_first_sighting"] == 2
+    assert p["events_with_prior_sighting"] == 1
+    assert p["first_sighting_inferred_from_agents"] == 1, "evenimentul 3 n-are rând"
+    assert p["events_at_first_sighting"] == p["distinct_hashes"]
+
+    # Contra-proba: fără rândurile de bandă, regula veche rupe invarianta.
+    vechi = compute_prevalence_metrics(evenimente, counts, [], 1)
+
+    assert vechi["events_at_first_sighting"] == 3
+    assert vechi["events_at_first_sighting"] != vechi["distinct_hashes"]
+    assert vechi["first_sighting_inferred_from_agents"] == 3
+
+
 def test_the_baseline_of_a_later_run_carries_the_memory_of_the_earlier_one(
     client, registered_agent_id
 ):

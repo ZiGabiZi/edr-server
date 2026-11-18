@@ -41,7 +41,7 @@ Ce NU măsoară:
 import logging
 from datetime import datetime, timezone
 from threading import Lock
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, Optional, Set, Tuple
 
 from app.services import event_store
 
@@ -88,8 +88,22 @@ def _record_baseline_once(run_id: str) -> None:
 def for_event(
     sha256_hex: Optional[str], agent_id: str, run_id: str
 ) -> Optional[Dict[str, Any]]:
+    """Blocul de pe fir, fără intrarea benzii. Vezi `observe`."""
+    observed = observe(sha256_hex, agent_id, run_id)
+
+    return observed[0] if observed is not None else None
+
+
+def observe(
+    sha256_hex: Optional[str], agent_id: str, run_id: str
+) -> Optional[Tuple[Dict[str, Any], bool]]:
     """
     Înregistrează vederea și întoarce prevalența conținutului, pentru un eveniment.
+
+    Întoarce perechea (blocul de pe fir, `prior_sighting`). Al doilea termen e
+    intrarea benzii minime (P2.6, B5) — dacă parcul avea deja conținutul înainte
+    de evenimentul ăsta — și NU intră în bloc: blocul e contract (v9), iar
+    banda stă în afara firului.
 
     `None` când evenimentul n-are hash: fără conținut identificat nu există nimic
     de numărat, iar o prevalență pusă acolo ar fi o afirmație despre un fișier pe
@@ -119,11 +133,13 @@ def for_event(
 
     vazut = event_store.record_and_count_sighting(hash_brut, agent_id, _utc_now())
 
-    return {
+    block = {
         "agents": vazut["agents"],
         "park_agents": event_store.park_agents(),
         "first_seen": vazut["first_seen"],
     }
+
+    return block, vazut["prior_sighting"]
 
 
 def reset_for_tests() -> None:
