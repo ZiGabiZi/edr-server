@@ -239,7 +239,7 @@ deschide o rulare `auto-` nouă, deci un experiment întrerupt continuă sub alt
 nume. Numărătorul măsurat descrie procesul curent, așa că metrica se citește
 înainte să deschizi altă rulare în același proces (`METRICS.md` §7.5, §9).
 
-Testele — **473**:
+Testele — **487**:
 
 ```bash
 .venv/bin/python -m pytest app/tests -q
